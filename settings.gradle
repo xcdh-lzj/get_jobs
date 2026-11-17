@@ -1,0 +1,16 @@
+pluginManagement {
+    // 本机代理等 systemProp 配置不进入公开仓库；命令行 -D 参数优先。
+    def local = new File(settingsDir, 'config/gradle-local.properties')
+    if (local.isFile()) {
+        def properties = new Properties()
+        local.withInputStream { properties.load(it) }
+        properties.each { key, value ->
+            if (key.startsWith('systemProp.')) {
+                def name = key.substring('systemProp.'.length())
+                if (System.getProperty(name) == null) System.setProperty(name, value)
+            }
+        }
+    }
+}
+
+rootProject.name = 'get_jobs'

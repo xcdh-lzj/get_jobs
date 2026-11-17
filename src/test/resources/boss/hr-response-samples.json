@@ -1,0 +1,44 @@
+[
+  {
+    "bossInfo": {
+      "activeTimeDesc": "刚刚活跃",
+      "bossOnline": true
+    },
+    "observedCount": 1
+  },
+  {
+    "bossInfo": {
+      "activeTimeDesc": "刚刚活跃",
+      "bossOnline": false
+    },
+    "observedCount": 1
+  },
+  {
+    "bossInfo": {
+      "activeTimeDesc": "3日内活跃",
+      "bossOnline": false
+    },
+    "observedCount": 1
+  },
+  {
+    "bossInfo": {
+      "activeTimeDesc": "本周活跃",
+      "bossOnline": false
+    },
+    "observedCount": 1
+  },
+  {
+    "bossInfo": {
+      "activeTimeDesc": null,
+      "bossOnline": false
+    },
+    "observedCount": 1
+  },
+  {
+    "bossInfo": {
+      "activeTimeDesc": "本月活跃",
+      "bossOnline": false
+    },
+    "observedCount": 1
+  }
+]

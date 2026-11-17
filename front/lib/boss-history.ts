@@ -1,0 +1,37 @@
+export interface BossHistoryJob {
+  id: number
+  companyName?: string
+  jobName?: string
+  salary?: string
+  location?: string
+  experience?: string
+  degree?: string
+  hrName?: string
+  hrPosition?: string
+  hrActiveStatus?: string
+  deliveryStatus?: string
+  jobUrl?: string
+  recruitmentStatus?: string
+  companyAddress?: string
+  industry?: string
+  introduce?: string
+  financingStage?: string
+  companyScale?: string
+  jobDescription?: string
+  createdAt?: string
+}
+
+// Validate the saved detail address without probing it; retain its original query parameters.
+export function bossHistoryUrl(value?: string): string | null {
+  if (!value || /[\u0000-\u0020\u007f]/.test(value)) return null
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.hostname !== 'www.zhipin.com' || url.username || url.password || url.port) return null
+    if (!/^\/job_detail\/[A-Za-z0-9_~=-]{5,180}\.html$/.test(url.pathname)) return null
+    return url.href
+  } catch { return null }
+}
+
+export function bossHistorySearchText(job: Pick<BossHistoryJob, 'companyName' | 'jobName'>): string {
+  return [job.companyName, job.jobName].map(value => value?.trim()).filter(Boolean).join(' ')
+}

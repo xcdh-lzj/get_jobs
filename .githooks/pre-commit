@@ -1,0 +1,4 @@
+#!/bin/sh
+# 只检查实际暂存内容，防止工作文件已清理而暂存区仍有私密值。
+cd "$(git rev-parse --show-toplevel)" || exit 1
+exec python3 scripts/check_publication.py

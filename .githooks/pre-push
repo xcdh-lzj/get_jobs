@@ -1,0 +1,12 @@
+#!/bin/sh
+# 公开仓库使用独立根提交；阻止误推本机旧历史、旧备份标签或合并后的旧历史。
+public_root=$(git config --local --get getjobs.publicRoot)
+[ -n "$public_root" ] || exit 0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+  roots=$(git rev-list --max-parents=0 "$local_sha") || exit 1
+  if [ "$roots" != "$public_root" ]; then
+    echo '推送已阻止：所选分支或标签包含本机未公开的旧历史。请从公开 main 分支继续开发。' >&2
+    exit 1
+  fi
+done

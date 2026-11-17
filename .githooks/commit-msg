@@ -1,0 +1,17 @@
+#!/bin/sh
+# 提交说明支持中文：<emoji> <说明>；兼容 Git 自动生成的消息。
+subject=$(sed -n '/^[^#]/p' "$1" | sed -n '1p' | tr -d '\r')
+case "$subject" in
+  "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+first=$(printf '%s' "$subject" | LC_ALL=C cut -c1 | LC_ALL=C od -An -tu1 | tr -d ' ')
+if [ -z "$first" ] || [ "$first" -lt 128 ]; then
+  echo '提交说明请使用：<emoji> <中文说明>，例如：🐛 修复图表刷新' >&2
+  exit 1
+fi
+rest=$(printf '%s' "$subject" | LC_ALL=C sed 's/^[^ -~]*//')
+case "$rest" in
+  " "*) [ -n "${rest# }" ] && exit 0 ;;
+esac
+echo '请在 emoji 后留一个空格，并填写提交说明。' >&2
+exit 1

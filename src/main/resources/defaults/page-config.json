@@ -1,0 +1,36 @@
+{
+  "boss_config": [
+    {
+      "debugger": 0,
+      "wait_time": 10,
+      "keywords": "",
+      "city_code": "全国",
+      "industry": "[不限]",
+      "job_type": "不限",
+      "experience": "[不限]",
+      "degree": "[不限]",
+      "salary": "[不限]",
+      "scale": "[不限]",
+      "stage": "[不限]",
+      "say_hi": "您好，我对这个岗位感兴趣，方便进一步沟通吗？",
+      "expected_salary_min": null,
+      "expected_salary_max": null,
+      "enable_ai": 0,
+      "send_img_resume": 0,
+      "filter_dead_hr": 1,
+      "dead_status": "[]",
+      "allow_repeat_chat": 0,
+      "repeat_chat_messages": null
+    }
+  ],
+  "liepin_config": [{"keywords": "", "city": "全国", "salary_code": ""}],
+  "job51_config": [{"keywords": "", "job_area": "[\"不限\"]", "salary": "[\"不限\"]"}],
+  "zhilian_config": [{"keywords": "", "city_code": "0", "salary": ""}],
+  "ai": [
+    {
+      "introduce": "",
+      "prompt": "请根据以下信息生成简洁、礼貌的中文求职招呼语。个人介绍：%s；求职方向：%s；岗位名称：%s；岗位职责：%s；参考招呼语：%s。只使用用户明确提供的经历与技能，不编造资历，不输出联系方式或额外说明。岗位完全不匹配时只返回 false。"
+    }
+  ],
+  "boss_blacklist": []
+}
