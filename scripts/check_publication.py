@@ -34,16 +34,20 @@ def private_path(name: str) -> bool:
 
 
 def private_identities(root: Path) -> set[bytes]:
+    generic = {'root', 'user', 'admin', 'runner', 'developer', 'dev', 'test', 'ubuntu', '默认账号',
+               'Get Jobs Contributors', 'noreply@users.noreply.github.com'}
+    generic = {value.casefold() for value in generic}
     values = {getpass.getuser()}
     for key in ('user.name', 'user.email'):
         result = subprocess.run(['git', 'config', '--get', key], cwd=root, capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip() not in {'Get Jobs Contributors', 'noreply@users.noreply.github.com'}:
+        if result.returncode == 0:
             values.add(result.stdout.strip())
     database = root / 'db/getjobs.db'
     if database.is_file():
         with sqlite3.connect(f'{database.resolve().as_uri()}?mode=ro', uri=True) as db:
-            values.update(str(row[0]) for row in db.execute('SELECT name FROM boss_accounts') if row[0])
-    return {value.encode() for value in values if len(value) >= 2}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='boss_accounts'").fetchone():
+                values.update(str(row[0]) for row in db.execute('SELECT name FROM boss_accounts') if row[0])
+    return {value.encode() for value in values if len(value) >= 2 and value.casefold() not in generic}
 
 
 def public_email(value: bytes, name: str) -> bool:

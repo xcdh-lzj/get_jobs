@@ -222,7 +222,12 @@ def private_needles(root: Path) -> set[bytes]:
                 'SELECT cookie_value FROM boss_accounts', 'SELECT introduce FROM boss_accounts',
                 'SELECT introduce FROM ai',
             ]:
-                values.update(str(row[0]) for row in db.execute(query) if row[0])
+                try:
+                    values.update(str(row[0]) for row in db.execute(query) if row[0])
+                except sqlite3.OperationalError as error:
+                    # A newly initialized or older database may not have optional account tables yet.
+                    if 'no such table' not in str(error) and 'no such column' not in str(error):
+                        raise
     env = root / '.env'
     if env.is_file():
         for line in env.read_text(encoding='utf-8').splitlines():

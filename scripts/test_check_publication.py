@@ -1,14 +1,35 @@
 """Publication checks cover staged bytes, ignored runtime paths and masked reporting."""
 from pathlib import Path
 import os
+import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 import check_publication as check
 
 
 class PublicationCheckTest(unittest.TestCase):
+    def test_generic_and_pre_migration_databases_do_not_break_public_source_checks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            defaults = root / 'distribution/defaults'
+            shutil.copytree(Path(__file__).resolve().parents[1] / 'distribution/defaults', defaults)
+            bundled = root / 'src/main/resources/defaults'
+            bundled.mkdir(parents=True)
+            shutil.copyfile(defaults / 'page-config.json', bundled / 'page-config.json')
+            check.share.create_database(root / 'db/getjobs.db', defaults)
+            self.assertEqual(set(), check.share.private_needles(root))
+            with patch('check_publication.getpass.getuser', return_value='Root'), patch('check_publication.subprocess.run', return_value=SimpleNamespace(returncode=1, stdout='')):
+                self.assertEqual(set(), check.private_identities(root))
+                with sqlite3.connect(root / 'db/getjobs.db') as db:
+                    db.execute('CREATE TABLE boss_accounts (name TEXT)')
+                    db.executemany('INSERT INTO boss_accounts VALUES (?)', [('默认账号',), ('synthetic-private-account',)])
+                self.assertEqual({b'synthetic-private-account'}, check.private_identities(root))
+
     def test_private_paths_include_local_files_backups_and_nested_dependency_caches(self):
         for name in ['.env', '.env.local', 'config/application-local.yaml', 'config/page-config.local.json',
                      'config/gradle-local.properties', 'db/getjobs.db', 'data/resume.pdf',
