@@ -1251,7 +1251,7 @@ public class Boss {
         })) {
             detailPage.navigate(detailUrl);
             PlaywrightUtil.sleep(1);
-            navigator.checkDailyLimit();
+            navigator.checkBlockingNotices();
 
             // 3. 根据开关选择是否允许对已沟通过的Boss再次发送消息
             Locator chatBtn = detailPage.locator("a.btn-startchat, a.op-btn-chat");
@@ -1359,7 +1359,7 @@ public class Boss {
                 if(!navigator.prepareToSend(shouldStopCallback,2_000))return false;
                 sendText.first().click();
                 PlaywrightUtil.sleep(1);
-                navigator.checkDailyLimit();
+                navigator.checkBlockingNotices();
                 sendSuccess = true;
             } else {
                 log.warn("未找到发送按钮，自动跳过！岗位：{}", job.getJobName());
@@ -1412,6 +1412,13 @@ public class Boss {
                 }
             }
             return sendSuccess;
+        } catch (BossJobBlockedException blocked) {
+            lastSubmissionOutcome = BossCityYieldMonitor.Outcome.UNAVAILABLE;
+            String reason = "自动跳过（未投递）：" + job.getJobName() + " · " + blocked.getMessage();
+            log.info(reason);
+            if (progressCallback != null) progressCallback.accept(reason, null, null);
+            // try-with-resources 已关闭本岗位详情及其弹窗，主列表和其他账号不受影响。
+            return false;
         }
     }
 

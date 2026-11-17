@@ -47,7 +47,7 @@ final class BossChatNavigator implements AutoCloseable {
     Chat open(Locator button, boolean repeat, boolean allowRepeat, Supplier<Boolean> stop, long timeoutMs) {
         if (stop != null && Boolean.TRUE.equals(stop.get())) return null;
         if (repeat && !allowRepeat) return null;
-        checkDailyLimit();
+        checkBlockingNotices();
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         String entryUrl = origin.url();
         boolean inputInitiallyVisible=origin.locator(INPUT).first().isVisible();
@@ -60,7 +60,7 @@ final class BossChatNavigator implements AutoCloseable {
         while (System.nanoTime() < deadline) {
             if (stop != null && Boolean.TRUE.equals(stop.get())) return null;
             // 上限弹框可能出现在原详情页，也可能出现在新窗口；不受1秒确认框检测窗口限制。
-            checkDailyLimit();
+            checkBlockingNotices();
             if(handleQuotaReminders(deadline,stop)) {
                 reminderSeen=true;
                 if(!confirmed)confirmationDeadline=Math.min(deadline,System.nanoTime()+1_000_000_000L);
@@ -113,6 +113,7 @@ final class BossChatNavigator implements AutoCloseable {
                     // 每轮新建定位器，避免导航后继续使用旧 frame 的输入框。
                     Locator input = candidate.locator(INPUT).first();
                     if (input.isVisible() && input.isEditable(new Locator.IsEditableOptions().setTimeout(500))) {
+                        checkBlockingNotices();
                         return new Chat(candidate, input, repeat);
                     }
                 } catch (PlaywrightException navigationError) {
@@ -131,13 +132,23 @@ final class BossChatNavigator implements AutoCloseable {
         for (Page popup : new ArrayList<>(popups)) BossCommunicationLimit.check(popup);
     }
 
+    void checkBlockingNotices() {
+        // 账号额度用尽优先处理；岗位不匹配只结束本岗位。
+        checkDailyLimit();
+        BossJobBlock.check(origin);
+        for (Page popup : new ArrayList<>(popups)) BossJobBlock.check(popup);
+    }
+
     /** 输入和发送前再次处理晚到的额度提醒；停止后不再点击确认。 */
     boolean prepareToSend(Supplier<Boolean> stop,long timeoutMs) {
         long deadline=System.nanoTime()+timeoutMs*1_000_000L;
         while(System.nanoTime()<deadline) {
             if(stop!=null && Boolean.TRUE.equals(stop.get()))return false;
-            checkDailyLimit();
-            if(!handleQuotaReminders(deadline,stop))return true;
+            checkBlockingNotices();
+            if(!handleQuotaReminders(deadline,stop)) {
+                checkBlockingNotices();
+                return true;
+            }
             if(!pump())return false;
         }
         log.warn("剩余额度提醒尚未关闭，当前岗位未发送消息");return false;

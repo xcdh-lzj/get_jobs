@@ -114,7 +114,7 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
         <div ref={panel} tabIndex={0} aria-label="日志内容" onScroll={event => {
           const node = event.currentTarget
           if (following && node.scrollHeight - node.scrollTop - node.clientHeight > 40) pause()
-        }} className="max-h-96 min-h-36 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+        }} className="max-h-[40rem] min-h-56 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           {visible.length ? <ol className="divide-y divide-border/60 pb-10">{visible.map(row => <LogEntry key={row.id} row={row} />)}</ol>
             : <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-5 py-7 text-center">
               <BiFile className="mb-1 h-7 w-7 text-muted-foreground/50" />
