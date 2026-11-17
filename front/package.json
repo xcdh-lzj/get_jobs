@@ -8,7 +8,7 @@
     "build:prod": "next build --webpack && node scripts/copy-dist.mjs",
     "start": "node start-prod.mjs",
     "lint": "eslint",
-    "test:progress": "node --test tests/boss-progress.test.mjs tests/boss-accounts.test.mjs tests/boss-review.test.mjs tests/boss-cities.test.mjs tests/boss-salary.test.mjs tests/workspace-save.test.mjs tests/boss-history.test.mjs tests/boss-analysis-chart.test.mjs"
+    "test:progress": "node --test tests/boss-progress.test.mjs tests/boss-accounts.test.mjs tests/boss-review.test.mjs tests/boss-cities.test.mjs tests/boss-salary.test.mjs tests/workspace-save.test.mjs tests/boss-history.test.mjs tests/boss-analysis-chart.test.mjs tests/boss-run-logs.test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.7",

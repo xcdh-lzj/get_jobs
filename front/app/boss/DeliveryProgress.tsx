@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import { BiRefresh, BiTime } from 'react-icons/bi'
+import { useEffect, useState } from 'react'
+import { BiRefresh } from 'react-icons/bi'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { batchProgressPercent, type BossTaskStatus } from '@/lib/boss-progress'
 import { cityStateLabels } from '@/lib/boss-cities'
+import RunLogPanel from './RunLogPanel'
 
 const stateLabels = {
   idle: '未开始', starting: '准备中', running: '投递中', stopping: '停止中',
@@ -19,9 +20,7 @@ function duration(milliseconds: number) {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
 }
 
-function time(timestamp: number) {
-  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false })
-}
+const EMPTY_LOGS: NonNullable<BossTaskStatus['progress']>['logs'] = []
 
 export default function DeliveryProgress({ status, connection, error, onRefresh }: {
   status: BossTaskStatus | null
@@ -31,16 +30,11 @@ export default function DeliveryProgress({ status, connection, error, onRefresh 
 }) {
   const progress = status?.progress
   const [now, setNow] = useState(() => Date.now())
-  const logPanel = useRef<HTMLDivElement>(null)
-  const followLogs = useRef(true)
   useEffect(() => {
     if (!status?.isRunning) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [status?.isRunning])
-  useEffect(() => {
-    if (followLogs.current && logPanel.current) logPanel.current.scrollTop = logPanel.current.scrollHeight
-  }, [progress?.revision])
 
   const percent = progress ? batchProgressPercent(progress) : null
   const elapsed = progress?.startedAt == null ? 0
@@ -106,25 +100,7 @@ export default function DeliveryProgress({ status, connection, error, onRefresh 
           </p>}
           <p className="mt-3 text-xs text-muted-foreground">进度条按当前城市和关键词计算；累计数量覆盖本次任务。未投递包含过滤、跳过及未完成发送的岗位。</p>
         </div>
-        <div>
-          <div className="mb-2 flex items-center justify-between text-sm">
-            <span className="font-medium">运行日志</span>
-            <span className="flex items-center gap-1 text-xs text-muted-foreground"><BiTime />
-              {progress?.taskId ? `最近更新 ${time(progress.updatedAt)}` : '等待任务开始'}
-            </span>
-          </div>
-          <div ref={logPanel} onScroll={event => {
-            const panel = event.currentTarget
-            followLogs.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 40
-          }} className="max-h-64 overflow-y-auto rounded-xl border bg-muted/20 p-3 font-mono text-xs leading-6">
-            {!progress?.logs.length ? <p className="py-5 text-center text-muted-foreground">任务开始后，这里会显示搜索、分析和投递进度。</p>
-              : progress.logs.map(entry => <div key={entry.id} className="flex gap-3">
-                <time className="shrink-0 text-muted-foreground">{time(entry.timestamp)}</time>
-                <span className={`min-w-0 break-words ${entry.type === 'error' ? 'text-red-600 dark:text-red-400' : entry.type === 'warning' ? 'text-amber-700 dark:text-amber-400' : entry.type === 'success' ? 'text-teal-700 dark:text-teal-400' : ''}`}>{entry.message}</span>
-              </div>)}
-          </div>
-          {progress && progress.logs.length >= 200 && <p className="mt-1 text-xs text-muted-foreground">显示最近 200 条记录。</p>}
-        </div>
+        <RunLogPanel key={progress?.taskId ?? 'idle'} logs={progress?.logs ?? EMPTY_LOGS} updatedAt={progress?.updatedAt} />
       </CardContent>
     </Card>
   )
