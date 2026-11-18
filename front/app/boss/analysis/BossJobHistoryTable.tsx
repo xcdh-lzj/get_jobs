@@ -19,8 +19,7 @@ const columns = [
   ["HR活跃", 92],
   ["投递状态", 88],
   ["投递或过滤原因", 212],
-  ["职位描述", 94],
-  ["岗位链接", 86],
+  ["岗位详情", 100],
   ["处理时间", 120],
 ] as const
 
@@ -56,7 +55,7 @@ export default function BossJobHistoryTable({ items, loading, error, scrollKey, 
       tabIndex={0}
       className="relative max-h-[40rem] min-w-0 max-w-full overflow-auto rounded-xl border focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
     >
-      <table className="w-full min-w-[1530px] table-fixed border-separate border-spacing-0 text-left text-[13px] leading-5 [&_td]:border-b [&_td]:border-border/50 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top [&_td]:[overflow-wrap:anywhere] [&_tr:last-child_td]:border-b-0">
+      <table className="w-full min-w-[1450px] table-fixed border-separate border-spacing-0 text-left text-[13px] leading-5 [&_td]:border-b [&_td]:border-border/50 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top [&_td]:[overflow-wrap:anywhere] [&_tr:last-child_td]:border-b-0">
         <caption className="sr-only">Boss 岗位投递记录</caption>
         <colgroup>{columns.map(([label, width]) => <col key={label} style={{ width }} />)}</colgroup>
         <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-200">
@@ -99,13 +98,15 @@ export default function BossJobHistoryTable({ items, loading, error, scrollKey, 
                 </td>
                 <td className="text-muted-foreground">{text(job.deliveryReason)}</td>
                 <td>
-                  {job.jobDescription?.trim() ? (
-                    <Button type="button" variant="ghost" size="sm" className="-ml-1.5 -mt-1.5 h-8 gap-1 px-1.5 text-xs text-primary"
-                      aria-label={"查看职位描述：" + (job.jobName || "未命名岗位")} onClick={() => setSelected(job)}
-                    ><FileText className="h-3.5 w-3.5" />查看全文</Button>
-                  ) : text()}
+                  <div className="flex flex-col items-start gap-1 whitespace-nowrap">
+                    {job.jobDescription?.trim() && (
+                      <Button type="button" variant="link" size="sm" className="h-5 gap-1 px-0"
+                        aria-label={"查看职位描述：" + (job.jobName || "未命名岗位")} onClick={() => setSelected(job)}
+                      ><FileText />查看描述</Button>
+                    )}
+                    <BossJobLink url={job.jobUrl} title={job.jobName} />
+                  </div>
                 </td>
-                <td><BossJobLink url={job.jobUrl} title={job.jobName} /></td>
                 <td className="tabular-nums">
                   {time ? <time dateTime={time.replace(" ", "T")} className="block text-xs leading-5">
                     <span className="block text-muted-foreground">{time.slice(0, 10)}</span>
