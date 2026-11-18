@@ -33,6 +33,8 @@ class BossBlockedSubmissionTest {
         try (var sleeps = mockStatic(PlaywrightUtil.class); var navigators = mockConstruction(BossChatNavigator.class, (navigator, context) -> {
             when(navigator.open(any(), anyBoolean(), anyBoolean(), any(), anyLong())).thenReturn(new BossChatNavigator.Chat(detail, input, false));
             when(navigator.prepareToSend(any(), anyLong())).thenReturn(true);
+            when(navigator.fillMessage(any(),anyString(),any(),anyLong())).thenAnswer(call->{input.fill(call.getArgument(1));return true;});
+            when(navigator.sendMessage(any(),any(),anyLong())).thenAnswer(call->{send.click();return true;});
             if (context.getCount() == 1) {
                 var blocked = new BossJobBlockedException("Boss 提示工作经历与该岗位要求不匹配");
                 if (stage.equals("open")) when(navigator.open(any(), anyBoolean(), anyBoolean(), any(), anyLong())).thenThrow(blocked);

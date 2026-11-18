@@ -1343,21 +1343,14 @@ public class Boss {
             if (progressCallback != null) progressCallback.accept("正在发送招呼语：" + job.getJobName(), null, null);
             // 6. 输入打招呼语
             Locator input = inputLocator.first();
-            input.click();
-            Object tagObj = input.evaluate("el => el.tagName.toLowerCase()");
-            if (tagObj instanceof String && ((String) tagObj).equals("textarea")) {
-                input.fill(message);
-            } else {
-                // 对 contenteditable 节点写入文本并派发 input 事件
-                input.evaluate("(el, msg) => { el.innerText = msg; el.dispatchEvent(new Event('input')); }", message);
-            }
+            if(!navigator.fillMessage(input,message,shouldStopCallback,2_000))return false;
 
             // 7. 点击发送按钮（div.send-message 或 button.btn-send）
             Locator sendText = detailPage.locator("div.send-message, button[type='send'].btn-send, button.btn-send");
             boolean sendSuccess = false;
             if (sendText.count() > 0) {
                 if(!navigator.prepareToSend(shouldStopCallback,2_000))return false;
-                sendText.first().click();
+                if(!navigator.sendMessage(sendText.first(),shouldStopCallback,2_000))return false;
                 PlaywrightUtil.sleep(1);
                 navigator.checkBlockingNotices();
                 sendSuccess = true;
@@ -1418,6 +1411,14 @@ public class Boss {
             log.info(reason);
             if (progressCallback != null) progressCallback.accept(reason, null, null);
             // try-with-resources 已关闭本岗位详情及其弹窗，主列表和其他账号不受影响。
+            return false;
+        } catch (BossChatInteractionException | com.microsoft.playwright.TimeoutError unavailable) {
+            if(page!=null && page.isClosed())throw unavailable;
+            lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNCERTAIN;
+            String detail=unavailable instanceof BossChatInteractionException?unavailable.getMessage():"本岗位沟通页面等待超时，已跳过该岗位";
+            String reason="自动跳过（未投递）："+job.getJobName()+" · "+detail+"，继续后续岗位";
+            log.warn(reason);
+            if(progressCallback!=null)progressCallback.accept(reason,null,null);
             return false;
         }
     }

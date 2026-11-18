@@ -57,6 +57,8 @@ class BossRepeatChatTest {
         try (var ignored = mockStatic(PlaywrightUtil.class);
              var navigators = mockConstruction(BossChatNavigator.class, (navigator, construction) -> {
                  when(navigator.prepareToSend(any(),anyLong())).thenReturn(true);
+                 when(navigator.fillMessage(any(),anyString(),any(),anyLong())).thenAnswer(call->{input.fill(call.getArgument(1));return true;});
+                 when(navigator.sendMessage(any(),any(),anyLong())).thenAnswer(call->{send.click();return true;});
                  when(navigator.open(any(), anyBoolean(), anyBoolean(), any(), anyLong())).thenAnswer(invocation -> {
                      button.click();
                      return new BossChatNavigator.Chat(detail, input, "继续沟通".equals(text));

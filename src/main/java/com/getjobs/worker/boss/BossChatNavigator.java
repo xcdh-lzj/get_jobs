@@ -153,6 +153,60 @@ final class BossChatNavigator implements AutoCloseable {
         }
         log.warn("剩余额度提醒尚未关闭，当前岗位未发送消息");return false;
     }
+
+    /** 阻断出现于 open 返回之后时，再核对一次；单个控件操作不使用默认30秒等待。 */
+    boolean fillMessage(Locator input,String message,Supplier<Boolean> stop,long timeoutMs) {
+        try {
+            if(!prepareInteraction(input,stop,timeoutMs))return false;
+            input.click(new Locator.ClickOptions().setTimeout(timeoutMs));
+            if(!prepareInteraction(input,stop,timeoutMs))return false;
+            // fill 同时支持 textarea 与 contenteditable，并派发正常的 input 事件。
+            input.fill(message,new Locator.FillOptions().setTimeout(timeoutMs));
+            checkBlockingNotices();return true;
+        }catch(PlaywrightException blocked) {throw interactionFailure(input,"聊天输入框暂不可操作",blocked);}
+    }
+
+    boolean sendMessage(Locator send,Supplier<Boolean> stop,long timeoutMs) {
+        try {
+            if(!prepareInteraction(send,stop,timeoutMs))return false;
+            send.click(new Locator.ClickOptions().setTimeout(timeoutMs));
+            checkBlockingNotices();return true;
+        }catch(PlaywrightException blocked) {
+            // 点击可能已触发请求，只核对阻断原因，不重复点击发送。
+            throw interactionFailure(send,"发送操作未正常完成，本岗位不重复点击",blocked);
+        }
+    }
+
+    private boolean prepareInteraction(Locator target,Supplier<Boolean> stop,long timeoutMs) {
+        long deadline=System.nanoTime()+timeoutMs*1_000_000L;
+        BossChatOverlay.Notice obstacle=null;
+        while(System.nanoTime()<deadline) {
+            if(stop!=null && Boolean.TRUE.equals(stop.get()))return false;
+            checkBlockingNotices();
+            if(handleQuotaReminders(deadline,stop)) {if(!pump())break;continue;}
+            obstacle=BossChatOverlay.find(target);
+            if(obstacle==null)return true;
+            requireNoVerification(obstacle);
+            if(!pump())break;
+        }
+        checkBlockingNotices();
+        throw new BossChatInteractionException(obstacle==null?"沟通提醒尚未处理完成，已跳过当前岗位":overlayReason(obstacle));
+    }
+
+    private BossChatInteractionException interactionFailure(Locator target,String fallback,PlaywrightException cause) {
+        // 工作经历限制和每日额度提醒可能在点击等待期间才出现，保留它们原有的处理层级。
+        checkBlockingNotices();
+        var obstacle=BossChatOverlay.find(target);requireNoVerification(obstacle);
+        return new BossChatInteractionException(obstacle==null?fallback:overlayReason(obstacle),cause);
+    }
+    private static String overlayReason(BossChatOverlay.Notice obstacle) {
+        String summary=obstacle.summary();
+        return "Boss 弹窗仍遮挡聊天区域"+(summary.isBlank()?"，未识别到弹窗文案":"："+summary)+"；已跳过该岗位";
+    }
+    private static void requireNoVerification(BossChatOverlay.Notice obstacle) {
+        if(obstacle!=null && obstacle.requiresUserAction())
+            throw new IllegalStateException("Boss 弹窗要求安全验证或重新登录，已停止本次任务："+obstacle.summary());
+    }
     private boolean handleQuotaReminders(long deadline,Supplier<Boolean> stop) {
         boolean found=false;var owned=new ArrayList<Page>();owned.add(origin);owned.addAll(new ArrayList<>(popups));
         for(var candidate:owned) {
