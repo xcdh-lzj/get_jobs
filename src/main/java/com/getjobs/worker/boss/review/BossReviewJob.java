@@ -46,4 +46,7 @@ public record BossReviewJob(String id, String title, String company, String city
     public BossReviewJob withActivity(String text) {
         return new BossReviewJob(id,title,company,city,salary,experience,degree,recruiterTitle,text,description,detailUrl,keyword,companyScale);
     }
+    public BossReviewJob withCompanyScale(String text) {
+        return new BossReviewJob(id,title,company,city,salary,experience,degree,recruiterTitle,activeStatus,description,detailUrl,keyword,text);
+    }
 }

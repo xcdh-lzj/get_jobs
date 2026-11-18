@@ -74,7 +74,8 @@ public final class BossCandidateCollector implements AutoCloseable {
     private static BossReviewJob merge(BossReviewJob a,BossReviewJob b) {
         return new BossReviewJob(or(b.id(),a.id()),or(b.title(),a.title()),or(b.company(),a.company()),or(b.city(),a.city()),or(b.salary(),a.salary()),
                 or(b.experience(),a.experience()),or(b.degree(),a.degree()),or(b.recruiterTitle(),a.recruiterTitle()),or(b.activeStatus(),a.activeStatus()),
-                or(b.description(),a.description()),or(b.detailUrl(),a.detailUrl()),or(b.keyword(),a.keyword()));
+                or(b.description(),a.description()),or(b.detailUrl(),a.detailUrl()),or(b.keyword(),a.keyword()),
+                or(b.companyScale(),a.companyScale()));
     }
     private static String or(String first,String fallback) { return first.isBlank()?fallback:first; }
     public static BossReviewJob fromList(JSONObject row,String keyword) {

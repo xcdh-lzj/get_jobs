@@ -6,10 +6,16 @@ import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.WaitUntilState;
 import org.json.JSONObject;
 import java.net.URI;
+import java.text.Normalizer;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 /** 仅打开岗位详情读取JD，不查找或点击“立即沟通”。 */
 final class BossReviewDetails {
+    private static final Pattern COMPANY_SCALE = Pattern.compile(
+            "^(?:(?:公司)?规模[:：]?)?((?:\\d+(?:-\\d+)?人(?:以上|以下)?|(?:少于|超过|不足)\\d+人))$");
     record Detail(BossReviewJob job,String error) {}
     private BossReviewDetails() {}
     static Detail load(Page listing,BossReviewJob basic) {
@@ -40,8 +46,8 @@ final class BossReviewDetails {
                     full=new BossReviewJob(id,info.optString("jobName",basic.title()),company==null?basic.company():company.optString("brandName",basic.company()),
                             info.optString("locationName",basic.city()),info.optString("salaryDesc",basic.salary()),info.optString("experienceName",basic.experience()),
                             info.optString("degreeName",basic.degree()),boss==null?basic.recruiterTitle():boss.optString("title",basic.recruiterTitle()),
-                            activityOr(BossHrActivityReader.fromJson(boss),basic.activeStatus()),info.optString("postDescription",""),
-                            basic.detailUrl(),basic.keyword(),company==null?basic.companyScale():company.optString("scaleName",basic.companyScale()));
+                            valueOr(BossHrActivityReader.fromJson(boss),basic.activeStatus()),info.optString("postDescription",""),
+                            basic.detailUrl(),basic.keyword(),valueOr(company==null?"":company.optString("scaleName",""),basic.companyScale()));
                 }
             }
             if(full.description().isBlank()) {
@@ -56,10 +62,51 @@ final class BossReviewDetails {
                 }
             }
             full=full.withActivity(BossHrActivityReader.readWithFallback(detail,full.activeStatus(),requireHr));
+            if (full.companyScale().isBlank()) full = full.withCompanyScale(readCompanyScale(detail));
             return new Detail(full,full.description().isBlank()?"未读取到完整岗位描述，已自动跳过":"");
         } catch(BossDailyLimitReachedException limit) { throw limit; }
         catch(RuntimeException error) { return new Detail(basic,"岗位详情读取失败或需要登录验证，未发起沟通"); }
         finally { try { if(!detail.isClosed())detail.close(); } catch(RuntimeException ignored) { /* 不覆盖停止或额度上限等原始结果。 */ } }
     }
-    private static String activityOr(String value,String fallback) { return value.isBlank()?fallback:value; }
+    private static String valueOr(String value,String fallback) { return value.isBlank()?fallback:value; }
+
+    private static String readCompanyScale(Page detail) {
+        try {
+            Object value = detail.evaluate("""
+                    () => {
+                      const heading = '公司基本信息';
+                      const visible = element => element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible';
+                      const companyPanel = '.sider-company,.job-detail-company,.company-info';
+                      const otherContent = '.job-sec-text,.job-recommend,.job-recommend-main,.similar-job,.recommend-list';
+                      const labels = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,dt,div,span'))
+                        .filter(label => label.textContent.trim() === heading && visible(label) && !label.closest(otherContent));
+                      const scoped = labels.filter(label => label.closest(companyPanel));
+                      if (scoped.length) return scoped.flatMap(readPanel);
+                      return labels.flatMap(readPanel);
+
+                      function readPanel(label) {
+                        let panel = label.closest(companyPanel) ?? label.parentElement;
+                        if (panel?.innerText.trim() === heading) panel = panel.parentElement;
+                        if (!panel || panel.matches('body,html')) return [];
+                        const lines = panel.innerText.split('\\n').map(line => line.trim()).filter(Boolean);
+                        const index = lines.indexOf(heading);
+                        if (index < 0) return [];
+                        const end = lines.findIndex((line, i) => i > index && /^(推荐岗位|相似岗位|相似职位|职位描述)$/.test(line));
+                        return lines.slice(index + 1, end < 0 ? undefined : end);
+                      }
+                    }
+                    """);
+            var matches = new LinkedHashSet<String>();
+            if (value instanceof List<?> lines) {
+                for (Object line : lines) {
+                    if (!(line instanceof String text)) continue;
+                    String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC)
+                            .replaceAll("[\\s\\p{Z}]+", "").replaceAll("[–—~～至]", "-");
+                    var match = COMPANY_SCALE.matcher(normalized);
+                    if (match.matches()) matches.add(match.group(1));
+                }
+            }
+            return matches.size() == 1 ? matches.iterator().next() : "";
+        } catch (RuntimeException ignored) { return ""; }
+    }
 }

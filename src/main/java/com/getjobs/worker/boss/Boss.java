@@ -1127,6 +1127,9 @@ public class Boss {
                 BossCommunicationLimit.check(page);
                 progressCallback.jobStarted(candidate.title(),candidate.company(),total);
                 var full=reviews.cachedJob(reviewRunId,candidate).orElse(candidate);
+                if (full.companyScale().isBlank() && !candidate.companyScale().isBlank()) {
+                    full = full.withCompanyScale(candidate.companyScale());
+                }
                 boolean missingHr=reviewContext.filters().filterInactive()
                         && BossHrActivity.assess(full.activeStatus(),reviewContext.filters().maxHrDays()).decision()==BossHrActivity.Decision.UNKNOWN;
                 boolean missingSalary=reviewContext.filters().hasSalaryFilter()
@@ -1135,7 +1138,7 @@ public class Boss {
                     progressCallback.accept("补齐岗位详情（JD、薪资、HR 活跃）："+candidate.title(),null,null);
                     var detail=BossReviewDetails.load(page,candidate,reviewContext.filters().filterInactive());
                     if(!detail.error().isBlank()) {
-                        var pending=BossReviewResult.pending(candidate,detail.error());reviews.record(reviewRunId,reviewContext,pending);decisions.put(candidate.key(),pending);continue;
+                        var pending=BossReviewResult.pending(detail.job(),detail.error());reviews.record(reviewRunId,reviewContext,pending);decisions.put(candidate.key(),pending);continue;
                     }
                     full=detail.job();
                 }
