@@ -2,14 +2,16 @@ package com.getjobs.application.controller;
 
 import com.getjobs.application.service.BossAccountContext;
 import com.getjobs.application.service.BossService;
+import com.getjobs.application.service.BossService.HistoryFilters;
+import com.getjobs.application.service.BossService.HistorySort;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -27,26 +29,9 @@ public class BossAnalyticsController {
      * 投递分析统计与图表（支持与列表相同的筛选条件）
      */
     @GetMapping("/stats")
-    public BossService.StatsResponse getStats(
-            @RequestParam(value = "statuses", required = false) String statuses,
-            @RequestParam(value = "location", required = false) String location,
-            @RequestParam(value = "experience", required = false) String experience,
-            @RequestParam(value = "degree", required = false) String degree,
-            @RequestParam(value = "minK", required = false) Double minK,
-            @RequestParam(value = "maxK", required = false) Double maxK,
-            @RequestParam(value = "keyword", required = false) String keyword,
-            @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter
-    ) {
-        return bossService.getBossStats(
-                parseStatuses(statuses),
-                location,
-                experience,
-                degree,
-                minK,
-                maxK,
-                keyword,
-                filterHeadhunter != null && filterHeadhunter
-        );
+    public BossService.StatsResponse getStats(@ModelAttribute(binding = false) HistoryFilters filters) {
+        validateDateRange(filters);
+        return bossService.getBossStats(filters);
     }
 
     /**
@@ -54,44 +39,22 @@ public class BossAnalyticsController {
      */
     @GetMapping("/list")
     public BossService.PagedResult list(
-            @RequestParam(value = "statuses", required = false) String statuses,
-            @RequestParam(value = "location", required = false) String location,
-            @RequestParam(value = "experience", required = false) String experience,
-            @RequestParam(value = "degree", required = false) String degree,
-            @RequestParam(value = "minK", required = false) Double minK,
-            @RequestParam(value = "maxK", required = false) Double maxK,
-            @RequestParam(value = "keyword", required = false) String keyword,
-            @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter,
-            @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
-            @RequestParam(value = "size", required = false, defaultValue = "20") Integer size
+            @ModelAttribute(binding = false) HistoryFilters filters,
+            @RequestParam(value = "sort", defaultValue = "RECORDED_DESC") HistorySort sort,
+            @RequestParam(value = "page", defaultValue = "1") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
     ) {
-        return bossService.listBossJobs(
-                parseStatuses(statuses),
-                location,
-                experience,
-                degree,
-                minK,
-                maxK,
-                keyword,
-                page,
-                size,
-                filterHeadhunter != null && filterHeadhunter
-        );
+        validateDateRange(filters);
+        return bossService.listBossJobs(filters, sort, page, size);
     }
 
     @GetMapping(value = "/jobs.csv", produces = "text/csv;charset=UTF-8")
     public ResponseEntity<byte[]> export(
-            @RequestParam(value = "statuses", required = false) String statuses,
-            @RequestParam(value = "location", required = false) String location,
-            @RequestParam(value = "experience", required = false) String experience,
-            @RequestParam(value = "degree", required = false) String degree,
-            @RequestParam(value = "minK", required = false) Double minK,
-            @RequestParam(value = "maxK", required = false) Double maxK,
-            @RequestParam(value = "keyword", required = false) String keyword,
-            @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter
+            @ModelAttribute(binding = false) HistoryFilters filters,
+            @RequestParam(value = "sort", defaultValue = "RECORDED_DESC") HistorySort sort
     ) {
-        var jobs = bossService.exportBossJobs(parseStatuses(statuses), location, experience, degree,
-                minK, maxK, keyword, Boolean.TRUE.equals(filterHeadhunter));
+        validateDateRange(filters);
+        var jobs = bossService.exportBossJobs(filters, sort);
         String name = "boss_jobs_" + BossAccountContext.id() + "_" + LocalDate.now() + ".csv";
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
@@ -100,9 +63,12 @@ public class BossAnalyticsController {
                 .body(BossJobCsv.encode(jobs));
     }
 
-    private static List<String> parseStatuses(String value) {
-        return value == null ? List.of() : Arrays.stream(value.split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+    private static void validateDateRange(HistoryFilters filters) {
+        var from = filters.deliveredFrom();
+        var to = filters.deliveredTo();
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "投递起始日期须早于或等于结束日期");
+        }
     }
 
     /**

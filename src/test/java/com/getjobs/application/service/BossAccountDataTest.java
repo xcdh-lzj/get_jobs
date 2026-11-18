@@ -3,12 +3,15 @@ package com.getjobs.application.service;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.getjobs.application.entity.*;
 import com.getjobs.application.mapper.*;
+import com.getjobs.application.service.BossService.HistoryFilters;
+import com.getjobs.application.service.BossService.HistorySort;
 import org.apache.ibatis.session.SqlSession;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 import java.nio.file.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
@@ -208,13 +211,14 @@ class BossAccountDataTest {
         boss.updateDeliveryStatus("same-job", "same-recruiter", "已投递", "已完成招呼语发送流程", sentAt);
         boss.updateDeliveryStatus("same-job", "same-recruiter", "已过滤", "再次筛选命中黑名单", null);
         assertEquals(1,boss.getBossStats().kpi.delivered);
-        var sent = boss.listBossJobs(List.of("已投递"), null, null, null, null, null, null, 1, 20, false).items.getFirst();
+        var sentFilter = new HistoryFilters(List.of("已投递"), null, null, null, null, null, null, false, null, null);
+        var sent = boss.listBossJobs(sentFilter, HistorySort.RECORDED_DESC, 1, 20).items.getFirst();
         assertEquals(sentAt, sent.getDeliveredAt());
         assertEquals("已完成招呼语发送流程", sent.getDeliveryReason());
         try (var scope=BossAccountContext.use(second)) {
             assertEquals(0,boss.getBossStats().kpi.delivered);
             assertEquals(1,boss.getBossStats().kpi.pending);
-            var rows=boss.listBossJobs(null,null,null,null,null,null,null,1,20,false);
+            var rows=boss.listBossJobs(unfilteredHistory(), HistorySort.RECORDED_DESC, 1, 20);
             assertEquals(1,rows.total); assertEquals("未投递",rows.items.getFirst().getDeliveryStatus());
             assertNull(rows.items.getFirst().getDeliveredAt());
             assertNull(rows.items.getFirst().getDeliveryReason());
@@ -291,7 +295,8 @@ class BossAccountDataTest {
                 boss.insertBossJob(row);
             }
         }
-        var rows = boss.listBossJobs(List.of("已过滤"), null, null, null, 15.0, 25.0, "Agent", 1, 1, true);
+        var filters = new HistoryFilters(List.of("已过滤"), null, null, null, 15.0, 25.0, "Agent", true, null, null);
+        var rows = boss.listBossJobs(filters, HistorySort.RECORDED_DESC, 1, 1);
         var controller = new com.getjobs.application.controller.BossAnalyticsController(boss);
         var response = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build()
                 .perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/jobs.csv")
@@ -308,6 +313,97 @@ class BossAccountDataTest {
         assertTrue(csv.contains("示例过滤原因"));
         assertFalse(csv.contains("示例公司 " + other));
         assertFalse(csv.contains("Agent 0") || csv.contains("Agent 1"));
+    }
+
+    @Test void historyDatesIncludeBothEndsAndUseTheSameRangeForTheListStatsAndCsv() throws Exception {
+        var day = LocalDate.of(2026, 11, 19);
+        insertHistoryJob("前一天的岗位", "20K", day.minusDays(1).atTime(23, 59, 59));
+        insertHistoryJob("晚上投递的岗位", "12K", day.atTime(23, 59, 59));
+        insertHistoryJob("凌晨投递的岗位", "15K", day.atStartOfDay());
+        insertHistoryJob("第二天的岗位", "20K", day.plusDays(1).atStartOfDay());
+        insertHistoryJob("历史时间缺失岗位", "25K", null);
+        long other = accounts.create("第二账号", null).id();
+        try (var scope = BossAccountContext.use(other)) {
+            insertHistoryJob("另一账号的岗位", "20K", day.atTime(12, 0));
+        }
+
+        var controller = new com.getjobs.application.controller.BossAnalyticsController(boss);
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        var sameDay = new org.springframework.util.LinkedMultiValueMap<String, String>();
+        sameDay.add("deliveredFrom", day.toString());
+        sameDay.add("deliveredTo", day.toString());
+        sameDay.add("statuses", "已投递, 未投递");
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var firstPage = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/list")
+                        .params(sameDay).param("sort", "DELIVERED_ASC").param("size", "1"))
+                .andReturn().getResponse();
+        assertEquals(200, firstPage.getStatus());
+        var page = mapper.readTree(firstPage.getContentAsByteArray());
+        assertEquals(2, page.path("total").asInt());
+        assertEquals("凌晨投递的岗位", page.path("items").get(0).path("jobName").asText());
+        assertEquals("2026-11-19 00:00:00", page.path("items").get(0).path("deliveredAt").asText());
+        var stats = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/stats")
+                        .params(sameDay)).andReturn().getResponse();
+        assertEquals(200, stats.getStatus());
+        assertEquals(2, mapper.readTree(stats.getContentAsByteArray()).path("kpi").path("total").asInt());
+        var export = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/jobs.csv")
+                        .params(sameDay).param("sort", "DELIVERED_DESC")).andReturn().getResponse();
+        assertEquals(200, export.getStatus());
+        var csv = export.getContentAsString(java.nio.charset.StandardCharsets.UTF_8).lines().toList();
+        assertEquals(3, csv.size());
+        assertTrue(csv.get(1).contains("晚上投递的岗位"));
+        assertTrue(csv.get(2).contains("凌晨投递的岗位"));
+
+        var upToDay = new HistoryFilters(null, null, null, null, null, null, null, false, null, day);
+        assertEquals(3, boss.listBossJobs(upToDay, HistorySort.DELIVERED_ASC, 1, 20).total);
+        var fromDay = new HistoryFilters(null, null, null, null, null, null, null, false, day, null);
+        assertEquals(3, boss.listBossJobs(fromDay, HistorySort.DELIVERED_DESC, 1, 20).total);
+        for (var sort : List.of(HistorySort.DELIVERED_ASC, HistorySort.DELIVERED_DESC)) {
+            var records = boss.listBossJobs(unfilteredHistory(), sort, 1, 20).items;
+            assertEquals("历史时间缺失岗位", records.getLast().getJobName());
+        }
+        for (String endpoint : List.of("/list", "/stats", "/jobs.csv")) {
+            var invalid = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss" + endpoint)
+                            .param("deliveredFrom", "2026-11-20").param("deliveredTo", "2026-11-19"))
+                    .andReturn().getResponse();
+            assertEquals(400, invalid.getStatus());
+        }
+    }
+
+    @Test void historySalarySortComparesMonthlyMidpointsBeforePaginationAndLeavesUnknownValuesLast() {
+        insertHistoryJob("较高薪资", "18-22K·14薪", null);
+        insertHistoryJob("面议岗位", "面议", null);
+        insertHistoryJob("较低薪资", "8000-10000元", null);
+        insertHistoryJob("中间薪资", "1.2-2万", null);
+        insertHistoryJob("同薪资新岗位", "16K", null);
+        var filters = unfilteredHistory();
+        var asc = boss.listBossJobs(filters, HistorySort.SALARY_ASC, 1, 2);
+        assertEquals(5, asc.total);
+        assertEquals(List.of("较低薪资", "同薪资新岗位"), asc.items.stream().map(BossJobDataEntity::getJobName).toList());
+        assertEquals("示例岗位描述", asc.items.getFirst().getJobDescription());
+        assertEquals(List.of("中间薪资", "较高薪资"), boss.listBossJobs(filters, HistorySort.SALARY_ASC, 2, 2)
+                .items.stream().map(BossJobDataEntity::getJobName).toList());
+        var desc = boss.exportBossJobs(filters, HistorySort.SALARY_DESC);
+        assertEquals(List.of("较高薪资", "同薪资新岗位", "中间薪资", "较低薪资", "面议岗位"),
+                desc.stream().map(BossJobDataEntity::getJobName).toList());
+        assertEquals("面议岗位", boss.listBossJobs(filters, HistorySort.SALARY_ASC, 3, 2).items.getFirst().getJobName());
+        var bounded = new HistoryFilters(null, null, null, null, 10.0, 18.0, null, false, null, null);
+        assertEquals(List.of("同薪资新岗位", "中间薪资"), boss.exportBossJobs(bounded, HistorySort.SALARY_DESC)
+                .stream().map(BossJobDataEntity::getJobName).toList());
+    }
+
+    private static HistoryFilters unfilteredHistory() {
+        return new HistoryFilters(null, null, null, null, null, null, null, false, null, null);
+    }
+
+    private void insertHistoryJob(String jobName, String salary, LocalDateTime deliveredAt) {
+        var job = new BossJobDataEntity();
+        job.setJobName(jobName);
+        job.setSalary(salary);
+        job.setJobDescription("示例岗位描述");
+        job.setDeliveryStatus("已投递");
+        job.setDeliveredAt(deliveredAt);
+        boss.insertBossJob(job);
     }
 
     @Test void httpRequestsScopeUpdatesAndStreamsAndRejectCrossAccountAndLockedWrites() throws Exception {

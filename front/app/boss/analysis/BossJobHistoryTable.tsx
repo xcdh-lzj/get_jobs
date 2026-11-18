@@ -1,9 +1,9 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { FileText } from "lucide-react"
+import { ArrowDown, ArrowUp, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { formatBossDeliveryTime, type BossHistoryJob } from "@/lib/boss-history"
+import { formatBossDeliveryTime, type BossHistoryJob, type BossHistorySort } from "@/lib/boss-history"
 import BossJobLink from "./BossJobLink"
 import BossJobRecordDialog from "./BossJobRecordDialog"
 
@@ -35,15 +35,19 @@ function text(value?: string) {
   return value?.trim() || <span className="text-muted-foreground">—</span>
 }
 
-export default function BossJobHistoryTable({ items, loading, error, scrollKey }: {
+export default function BossJobHistoryTable({ items, loading, error, scrollKey, sort }: {
   items: BossHistoryJob[]
   loading: boolean
   error: boolean
   scrollKey: string
+  sort: BossHistorySort
 }) {
   const [selected, setSelected] = useState<BossHistoryJob | null>(null)
   const container = useRef<HTMLDivElement>(null)
   useEffect(() => { if (container.current) container.current.scrollTop = 0 }, [scrollKey])
+  const sortedColumn = sort.startsWith("DELIVERED_") ? "投递时间" : sort.startsWith("SALARY_") ? "薪资" : null
+  const ascending = sort.endsWith("_ASC")
+  const SortArrow = ascending ? ArrowUp : ArrowDown
   return <>
     <div
       ref={container}
@@ -58,9 +62,12 @@ export default function BossJobHistoryTable({ items, loading, error, scrollKey }
         <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-200">
           <tr>
             {columns.map(([label]) => (
-              <th key={label} scope="col" className={"border-b px-3 py-3 text-xs font-semibold whitespace-nowrap"
+              <th key={label} scope="col" aria-sort={label === sortedColumn ? ascending ? "ascending" : "descending" : undefined}
+                className={"border-b px-3 py-3 text-xs font-semibold whitespace-nowrap"
                 + (label === "岗位名称" ? " lg:sticky lg:left-0 lg:bg-slate-100 dark:lg:bg-slate-900" : "")}
-              >{label}</th>
+              ><span className="inline-flex items-center gap-1">{label}
+                {label === sortedColumn && <SortArrow aria-hidden="true" className="h-3.5 w-3.5 text-primary" />}
+              </span></th>
             ))}
           </tr>
         </thead>

@@ -12,7 +12,7 @@ import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase
 
 import BossJobHistoryTable from "./BossJobHistoryTable"
 import { bossUrl } from "@/lib/boss-accounts"
-import type { BossHistoryJob as BossJob } from "@/lib/boss-history"
+import { BOSS_HISTORY_SORT_OPTIONS, type BossHistoryJob as BossJob, type BossHistorySort } from "@/lib/boss-history"
 import { sameAnalysisChart, type AnalysisChartProps } from "@/lib/boss-analysis-chart"
 
 type NameValue = { name: string; value: number }
@@ -231,6 +231,9 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const [minK, setMinK] = useState("")
   const [maxK, setMaxK] = useState("")
   const [keyword, setKeyword] = useState("")
+  const [deliveredFrom, setDeliveredFrom] = useState("")
+  const [deliveredTo, setDeliveredTo] = useState("")
+  const [sort, setSort] = useState<BossHistorySort>("RECORDED_DESC")
   const [filterHeadhunter, setFilterHeadhunter] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState(false)
@@ -238,7 +241,10 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const filterParams = new URLSearchParams(appliedFilter)
   if (filterHeadhunter) filterParams.set("filterHeadhunter", "true")
   const filterQuery = filterParams.toString()
-  const listParams = new URLSearchParams(filterQuery)
+  const historyParams = new URLSearchParams(filterQuery)
+  historyParams.set("sort", sort)
+  const historyQuery = historyParams.toString()
+  const listParams = new URLSearchParams(historyQuery)
   listParams.set("page", String(page))
   listParams.set("size", String(size))
   const listUrl = bossUrl("/api/boss/list?" + listParams, accountId)
@@ -247,6 +253,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const total = currentList?.total ?? 0
   const pageCount = Math.max(1, Math.ceil(total / size))
   const listError = errorUrl === listUrl
+  const invalidDateRange = !!deliveredFrom && !!deliveredTo && deliveredFrom > deliveredTo
 
   const goToPage = (value: number) => {
     const next = Math.max(1, Math.min(value, pageCount))
@@ -255,9 +262,10 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   }
 
   const applyFilters = () => {
+    if (invalidDateRange) return
     const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
-    for (const [key, value] of Object.entries({ location, experience, degree, minK, maxK, keyword })) {
+    for (const [key, value] of Object.entries({ location, experience, degree, minK, maxK, keyword, deliveredFrom, deliveredTo })) {
       if (value.trim()) params.set(key, value.trim())
     }
     setAppliedFilter(params.toString())
@@ -351,7 +359,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     setExporting(true)
     setExportError(false)
     try {
-      const response = await fetch(bossUrl("/api/boss/jobs.csv?" + filterQuery, accountId), { cache: "no-store" })
+      const response = await fetch(bossUrl("/api/boss/jobs.csv?" + historyQuery, accountId), { cache: "no-store" })
       if (!response.ok || !response.headers.get("Content-Type")?.startsWith("text/csv")) {
         throw new Error("无法导出岗位记录")
       }
@@ -410,7 +418,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <CardTitle className="text-base">筛选与操作</CardTitle>
-              <CardDescription>按状态、地区、经验、学历与薪资区间过滤列表</CardDescription>
+              <CardDescription>按岗位条件与投递日期筛选记录</CardDescription>
             </div>
             <div className="flex flex-wrap gap-3 rounded-full px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
               {STATUS_OPTIONS.map((s) => (
@@ -484,9 +492,28 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
             </div>
           </div>
 
-          <Button type="button" className="mt-4" onClick={applyFilters}>
-            <BiBarChart /> 应用筛选
-          </Button>
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <div className="w-44 space-y-1.5">
+              <Label htmlFor="boss-delivered-from">投递起始日期</Label>
+              <Input id="boss-delivered-from" type="date" value={deliveredFrom}
+                onChange={event => setDeliveredFrom(event.target.value)}
+                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-delivery-date-error" : undefined}
+              />
+            </div>
+            <div className="w-44 space-y-1.5">
+              <Label htmlFor="boss-delivered-to">投递结束日期</Label>
+              <Input id="boss-delivered-to" type="date" value={deliveredTo}
+                onChange={event => setDeliveredTo(event.target.value)}
+                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-delivery-date-error" : undefined}
+              />
+            </div>
+            <Button type="button" onClick={applyFilters} disabled={invalidDateRange}>
+              <BiBarChart /> 应用筛选
+            </Button>
+          </div>
+          {invalidDateRange && <p id="boss-delivery-date-error" role="alert" className="mt-2 text-sm text-destructive">
+            投递起始日期须早于或等于结束日期。
+          </p>}
         </CardContent>
       </Card>
 
@@ -503,6 +530,20 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="boss-history-sort" className="text-muted-foreground">排序</Label>
+              <Select id="boss-history-sort" className="h-9 w-auto" value={sort}
+                title="月薪按薪资区间中点排序"
+                onChange={event => {
+                  const option = BOSS_HISTORY_SORT_OPTIONS.find(item => item.value === event.target.value)
+                  if (!option) return
+                  setSort(option.value)
+                  goToPage(1)
+                }}
+              >
+                {BOSS_HISTORY_SORT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </Select>
+            </div>
             <Button type="button" variant="outline" size="sm" onClick={refreshData}><BiRefresh />刷新数据</Button>
             <Button type="button" size="sm" onClick={exportCSV} disabled={exporting}>
               <BiDownload />{exporting ? "正在导出…" : "导出 CSV"}
@@ -512,7 +553,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
         <CardContent>
           {listError && <p role="alert" className="mb-3 text-sm text-destructive">岗位数据同步失败，请稍后重试。</p>}
           {exportError && <p role="alert" className="mb-3 text-sm text-destructive">CSV 导出失败，请稍后重试。</p>}
-          <BossJobHistoryTable items={currentList?.items ?? []} loading={!currentList} error={listError} scrollKey={listUrl} />
+          <BossJobHistoryTable items={currentList?.items ?? []} loading={!currentList} error={listError} scrollKey={listUrl} sort={sort} />
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
             <p className="text-muted-foreground tabular-nums">{currentList ? "共 " + total.toLocaleString("zh-CN") + " 条岗位" : "—"}</p>
             <div className="flex flex-wrap items-center gap-2">
