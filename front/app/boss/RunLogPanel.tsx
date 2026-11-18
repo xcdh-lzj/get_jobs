@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { BiCheck, BiChevronDown, BiCopy, BiFile, BiPause, BiPlay, BiSearch, BiX } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,15 +49,38 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
   const [pausedAtId, setPausedAtId] = useState(0)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const panel = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
+  const followedSize = useRef<{ scrollHeight: number; clientHeight: number } | null>(null)
   const rows = useMemo(() => buildLogRows(logs), [logs])
   const visible = useMemo(() => visibleLogRows(rows, view, query), [rows, view, query])
   const latestId = logs.at(-1)?.id ?? 0
   const unseen = following ? 0 : countNewLogs(logs, pausedAtId)
   const folded = logs.length - rows.length
 
-  useEffect(() => {
-    if (following && panel.current) panel.current.scrollTop = panel.current.scrollHeight
-  }, [latestId, following, view, query, visible.length])
+  const scrollToLatest = useCallback(() => {
+    const node = panel.current
+    if (!node || node.clientHeight === 0) {
+      followedSize.current = null
+      return
+    }
+    const { scrollHeight, clientHeight } = node
+    node.scrollTop = Math.max(0, scrollHeight - clientHeight)
+    followedSize.current = { scrollHeight, clientHeight }
+  }, [])
+
+  // 日志更新后先贴底再绘制，避免浏览器的滚动事件读到新高度和旧位置。
+  useLayoutEffect(() => {
+    if (following) scrollToLatest()
+  }, [following, scrollToLatest, visible])
+
+  useLayoutEffect(() => {
+    if (!following || !panel.current || !content.current || typeof ResizeObserver === 'undefined') return
+    // 展开日志、文字换行或切回任务概览也会改变高度。
+    const observer = new ResizeObserver(scrollToLatest)
+    observer.observe(panel.current)
+    observer.observe(content.current)
+    return () => observer.disconnect()
+  }, [following, scrollToLatest])
 
   useEffect(() => {
     if (copyState === 'idle') return
@@ -112,15 +135,20 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
       </div>
       <div className="relative">
         <div ref={panel} tabIndex={0} aria-label="日志内容" onScroll={event => {
-          const node = event.currentTarget
-          if (following && node.scrollHeight - node.scrollTop - node.clientHeight > 40) pause()
-        }} className="max-h-[40rem] min-h-56 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-          {visible.length ? <ol className="divide-y divide-border/60 pb-10">{visible.map(row => <LogEntry key={row.id} row={row} />)}</ol>
-            : <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-5 py-7 text-center">
-              <BiFile className="mb-1 h-7 w-7 text-muted-foreground/50" />
-              <p className="text-sm font-medium">{!logs.length ? '等待任务开始' : query ? '没有匹配的日志' : view === 'attention' ? '当前没有提醒或异常' : '暂无关键日志'}</p>
-              <p className="max-w-sm text-xs leading-5 text-muted-foreground">{!logs.length ? '任务开始后，这里会显示关键进展与每个岗位的处理结果。' : query ? '换一个关键词，或切换到全部日志查看。' : '可切换到全部日志查看当前保留的运行记录。'}</p>
-            </div>}
+          const { scrollHeight, clientHeight, scrollTop } = event.currentTarget
+          const size = followedSize.current
+          // 高度变化造成的位置偏差交给 ResizeObserver，只有列表尺寸稳定时才判断是否上滚。
+          if (following && size?.scrollHeight === scrollHeight && size.clientHeight === clientHeight
+            && scrollHeight - clientHeight - scrollTop > 40) pause()
+        }} className={`max-h-[40rem] min-h-56 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${following ? '[overflow-anchor:none]' : ''}`}>
+          <div ref={content}>
+            {visible.length ? <ol className="divide-y divide-border/60 pb-10">{visible.map(row => <LogEntry key={row.id} row={row} />)}</ol>
+              : <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-5 py-7 text-center">
+                <BiFile className="mb-1 h-7 w-7 text-muted-foreground/50" />
+                <p className="text-sm font-medium">{!logs.length ? '等待任务开始' : query ? '没有匹配的日志' : view === 'attention' ? '当前没有提醒或异常' : '暂无关键日志'}</p>
+                <p className="max-w-sm text-xs leading-5 text-muted-foreground">{!logs.length ? '任务开始后，这里会显示关键进展与每个岗位的处理结果。' : query ? '换一个关键词，或切换到全部日志查看。' : '可切换到全部日志查看当前保留的运行记录。'}</p>
+              </div>}
+          </div>
         </div>
         {!following && <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-4">
           <Button type="button" variant="outline" size="sm" onClick={() => setFollowing(true)} className="pointer-events-auto rounded-full bg-background shadow-md"><BiChevronDown />{unseen ? `${unseen} 条新日志 · 回到最新` : '回到最新并跟随'}</Button>
