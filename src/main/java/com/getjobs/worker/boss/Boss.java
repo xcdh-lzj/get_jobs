@@ -27,6 +27,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -63,6 +64,10 @@ public class Boss {
     private BossCityYieldMonitor cityYield;
     private String activeCityCode;
     private BossCityYieldMonitor.Outcome lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNCERTAIN;
+    private String lastSubmissionStatus;
+    private String lastSubmissionReason;
+    private LocalDateTime lastDeliveredAt;
+    private String lastSubmissionJobId;
     private boolean previouslyContacted;
     @Setter private boolean reviewOnly;
     private BossReviewService.Context reviewContext;
@@ -448,6 +453,7 @@ public class Boss {
                     String bossActive = null;
                     String bossCompany = null;
                     String bossJobTitle = null;
+                    String jobEncryptId = null;
 
                     if (detailResp != null) {
                         try {
@@ -465,6 +471,7 @@ public class Boss {
                             org.json.JSONObject boss = zpData != null ? zpData.optJSONObject("bossInfo") : null;
 
                             if (jobInfo != null) {
+                                jobEncryptId = jobInfo.optString("encryptId", null);
                                 jobName = jobInfo.optString("jobName", "");
                                 jobSalary = BossSalary.normalize(jobInfo.optString("salaryDesc", ""));
                                 String city = jobInfo.optString("locationName", "");
@@ -495,6 +502,7 @@ public class Boss {
                     if (jobName != null && blackJobs != null && blackJobs.stream().anyMatch(jobName::contains)) {
                         jobYield=BossCityYieldMonitor.Outcome.UNAVAILABLE;
                         String term = findMatchedTerm(blackJobs, jobName);
+                        recordLegacyJobResult(jobEncryptId, "已过滤", "职位黑名单命中" + (term == null ? "" : "：" + term), null);
                         progressCallback.accept("已过滤：职位黑名单命中 · " + jobName, null, null);
                         log.info("被过滤：职位黑名单命中 | 公司：{} | 岗位：{} | 关键词：{}", bossCompany != null ? bossCompany : "", jobName, term != null ? term : "");
                         continue;
@@ -504,6 +512,7 @@ public class Boss {
                         var hr=BossHrActivity.assess(bossActive,config.getHrActivityPolicy().maxDays());
                         if(hr.decision()!=BossHrActivity.Decision.ACCEPT) {
                             jobYield=hr.decision()==BossHrActivity.Decision.REJECT?BossCityYieldMonitor.Outcome.UNAVAILABLE:BossCityYieldMonitor.Outcome.UNCERTAIN;
+                            recordLegacyJobResult(jobEncryptId, hr.decision()==BossHrActivity.Decision.REJECT?"已过滤":"未投递", hr.reason(), null);
                             progressCallback.accept(hr.reason()+" · "+jobName,null,null);
                             log.info("HR活跃过滤 | 岗位：{} | 原因：{}",jobName,hr.reason());continue;
                         }
@@ -511,6 +520,7 @@ public class Boss {
                     if (bossCompany != null && blackCompanies != null && blackCompanies.stream().anyMatch(bossCompany::contains)) {
                         jobYield=BossCityYieldMonitor.Outcome.UNAVAILABLE;
                         String term = findMatchedTerm(blackCompanies, bossCompany);
+                        recordLegacyJobResult(jobEncryptId, "已过滤", "公司黑名单命中" + (term == null ? "" : "：" + term), null);
                         progressCallback.accept("已过滤：公司黑名单命中 · " + bossCompany, null, null);
                         log.info("被过滤：公司黑名单命中 | 公司：{} | 岗位：{} | 关键词：{}", bossCompany, jobName != null ? jobName : "", term != null ? term : "");
                         continue;
@@ -518,6 +528,7 @@ public class Boss {
                     if (bossJobTitle != null && blackRecruiters != null && blackRecruiters.stream().anyMatch(bossJobTitle::contains)) {
                         jobYield=BossCityYieldMonitor.Outcome.UNAVAILABLE;
                         String term = findMatchedTerm(blackRecruiters, bossJobTitle);
+                        recordLegacyJobResult(jobEncryptId, "已过滤", "招聘者黑名单命中" + (term == null ? "" : "：" + term), null);
                         progressCallback.accept("已过滤：招聘者黑名单命中 · " + bossJobTitle, null, null);
                         log.info("被过滤：招聘者黑名单命中 | 公司：{} | 岗位：{} | 招聘者：{} | 关键词：{}", bossCompany != null ? bossCompany : "", jobName != null ? jobName : "", bossJobTitle, term != null ? term : "");
                         continue;
@@ -538,6 +549,8 @@ public class Boss {
                         postCount++;
                         jobDelivered = true;
                     }
+                    recordLegacyJobResult(lastSubmissionJobId == null ? jobEncryptId : lastSubmissionJobId,
+                            lastSubmissionStatus, lastSubmissionReason, lastDeliveredAt);
                     jobYield=lastSubmissionOutcome;
 
                 } finally {
@@ -638,23 +651,8 @@ public class Boss {
                 entity.setJobUrl("https://www.zhipin.com/job_detail/" + encryptId + ".html");
             }
 
-            // 黑名单处理
-            boolean filtered = false;
-            String companyName = entity.getCompanyName() != null ? entity.getCompanyName() : "";
-            String positionName = entity.getJobName() != null ? entity.getJobName() : "";
-            String hrPosition = entity.getHrPosition() != null ? entity.getHrPosition() : "";
-            try {
-                if (blackCompanies != null && blackCompanies.stream().anyMatch(companyName::contains)) filtered = true;
-                if (!filtered && blackJobs != null && blackJobs.stream().anyMatch(positionName::contains)) filtered = true;
-                if (!filtered && blackRecruiters != null && blackRecruiters.stream().anyMatch(hrPosition::contains)) filtered = true;
-            } catch (Throwable ignore) {}
-
-            // 明确超出所选活跃范围的岗位仍保留采集记录。
-            if (!filtered && Boolean.TRUE.equals(config.getFilterDeadHR())) {
-                filtered=BossHrActivity.assess(entity.getHrActiveStatus(),config.getHrActivityPolicy().maxDays()).decision()==BossHrActivity.Decision.REJECT;
-            }
-
-            entity.setDeliveryStatus(filtered ? "已过滤" : "未投递");
+            entity.setDeliveryStatus("未投递");
+            entity.setDeliveryReason("已采集，等待筛选");
 
             // 入库（若不存在），优先以 encrypt_id + encrypt_user_id 去重；若 userId 缺失，则以 encrypt_id 去重
             if (encryptId != null) {
@@ -1155,24 +1153,25 @@ public class Boss {
                     result=BossReviewResult.pending(candidate,"该岗位未取得可靠审核结果，未发起沟通");reviews.record(reviewRunId,reviewContext,result);
                 }
                 recordPrecisionResult(result);
-                var outcome=new PrecisionOutcome(false,BossCityYieldMonitor.Outcome.UNCERTAIN);
+                var outcome=new PrecisionOutcome(false,BossCityYieldMonitor.Outcome.UNCERTAIN,false);
                 try {outcome=resolvePrecisionResult(result,Boolean.TRUE.equals(existing.get(candidate.key())),keyword,total);}
                 finally {recordCityOutcome(outcome.yield());progressCallback.jobProcessed(outcome.sent(),++processed,total);}
+                if (outcome.attempted()) pauseBetweenJobs();
             }
             if(endLowYieldKeyword(keyword))return;
         }
     }
 
-    private record PrecisionOutcome(boolean sent,BossCityYieldMonitor.Outcome yield) {}
+    private record PrecisionOutcome(boolean sent,BossCityYieldMonitor.Outcome yield,boolean attempted) {}
     private PrecisionOutcome resolvePrecisionResult(BossReviewResult result,boolean deliveredBefore,String keyword,int total) {
-        var no=new PrecisionOutcome(false,BossCityYieldMonitor.Outcome.UNAVAILABLE);
-        var unknown=new PrecisionOutcome(false,BossCityYieldMonitor.Outcome.UNCERTAIN);
+        var no=new PrecisionOutcome(false,BossCityYieldMonitor.Outcome.UNAVAILABLE,false);
+        var unknown=new PrecisionOutcome(false,BossCityYieldMonitor.Outcome.UNCERTAIN,false);
         if(!result.approved())return "reject".equals(result.decision())?no:unknown;
         var candidate=result.job();progressCallback.jobStarted(candidate.title(),candidate.company(),total);
         if(reviewOnly) {
             reviews.delivery(reviewRunId,candidate,"preview_only");
             progressCallback.accept("仅审核通过（未投递）："+candidate.title(),null,null);
-            return new PrecisionOutcome(false,deliveredBefore?BossCityYieldMonitor.Outcome.UNAVAILABLE:BossCityYieldMonitor.Outcome.NEW_JOB);
+            return new PrecisionOutcome(false,deliveredBefore?BossCityYieldMonitor.Outcome.UNAVAILABLE:BossCityYieldMonitor.Outcome.NEW_JOB,false);
         }
         String url=candidate.detailUrl(),path=url.isBlank()?"":java.net.URI.create(url).getPath();
         if(url.isBlank() || !attemptedPrecisionPaths.add(path)) {
@@ -1187,15 +1186,24 @@ public class Boss {
         approvedLinks.add(url);approvedGreetings.put(url,greeting);
         Job job=new Job();job.setHref(url);job.setJobName(candidate.title());job.setCompanyName(candidate.company());
         job.setSalary(candidate.salary());job.setJobArea(candidate.city());job.setJobInfo(candidate.description());
-        boolean sent=resumeSubmission(keyword,job);
+        boolean sent;
+        try {
+            sent=resumeSubmission(keyword,job);
+        } catch (BossDailyLimitReachedException limit) {
+            bossService.recordPrecisionJob(candidate,"未投递","今日沟通次数已达上限",null);
+            throw limit;
+        }
+        String reason = sent && !result.reason().isBlank()
+                ? lastSubmissionReason + " · " + result.reason() : lastSubmissionReason;
+        bossService.recordPrecisionJob(candidate,lastSubmissionStatus,reason,lastDeliveredAt);
         reviews.delivery(reviewRunId,candidate,sent?"sent":"not_sent");
-        if(sent)bossService.recordPrecisionJob(candidate,"已投递");
         var yield=deliveredBefore?BossCityYieldMonitor.Outcome.UNAVAILABLE:lastSubmissionOutcome;
-        pauseBetweenJobs();return new PrecisionOutcome(sent,yield);
+        return new PrecisionOutcome(sent,yield,true);
     }
 
     private void recordPrecisionResult(BossReviewResult result) {
-        bossService.recordPrecisionJob(result.job(), "reject".equals(result.decision()) ? "已过滤" : "未投递");
+        String reason = result.approved() ? (reviewOnly ? "仅审核通过：" : "审核通过：") + result.reason() : result.reason();
+        bossService.recordPrecisionJob(result.job(), "reject".equals(result.decision()) ? "已过滤" : "未投递", reason, null);
         String label = result.approved() ? "审核通过" : "reject".equals(result.decision()) ? "已过滤" : "自动跳过（未投递）";
         progressCallback.accept(label + "：" + result.job().title() + " · " + result.reason(), null, null);
     }
@@ -1219,16 +1227,20 @@ public class Boss {
     @SneakyThrows
     private boolean resumeSubmission(String keyword, Job job) {
         lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNCERTAIN;
+        lastSubmissionStatus = "未投递";
+        lastSubmissionReason = null;
+        lastDeliveredAt = null;
+        lastSubmissionJobId = null;
         previouslyContacted=false;
         // 若收到停止指令，直接短路返回
         if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
             log.info("停止指令已触发，跳过投递 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
-            return false;
+            return skipSubmission("任务已取消");
         }
         // 调试模式：仅遍历不投递
         if (Boolean.TRUE.equals(config.getDebugger())) {
             log.info("调试模式：仅遍历岗位，不投递 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
-            return false;
+            return skipSubmission("调试模式，仅采集岗位");
         }
         BossCommunicationLimit.check(page);
 
@@ -1236,14 +1248,15 @@ public class Boss {
         String detailUrl = BossReviewJob.safeDetailUrl(job.getHref());
         if (precision && (!approvedLinks.contains(detailUrl) || !approvedGreetings.containsKey(detailUrl))) {
             log.warn("岗位未通过投递前审核，拒绝进入沟通：{}", job.getJobName());
-            return false;
+            return skipSubmission("岗位未通过投递前审核");
         }
         if (detailUrl.isBlank()) {
             Locator moreInfoBtn = page.locator("a.more-job-btn");
-            if (moreInfoBtn.count() == 0) return false;
+            if (moreInfoBtn.count() == 0) return skipSubmission("未找到岗位详情入口");
             detailUrl = BossReviewJob.safeDetailUrl(moreInfoBtn.first().getAttribute("href"));
-            if (detailUrl.isBlank()) return false;
+            if (detailUrl.isBlank()) return skipSubmission("缺少有效岗位链接");
         }
+        lastSubmissionJobId = extractEncryptId(detailUrl);
         // 2. 在后台标签页打开详情，避免每个岗位都把 Chrome 切到前台。
         Page detailPage = PlaywrightUtil.newBackgroundPage(page);
         try (BossChatNavigator navigator = new BossChatNavigator(detailPage,message -> {
@@ -1262,7 +1275,7 @@ public class Boss {
                 if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
                     log.info("停止指令已触发，结束查找聊天按钮 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                     try { detailPage.close(); } catch (Exception ignore) {}
-                    return false;
+                    return skipSubmission("任务已取消");
                 }
                 if (chatBtn.count() > 0) {
                     String buttonText = chatBtn.first().textContent();
@@ -1272,7 +1285,7 @@ public class Boss {
                         lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNAVAILABLE;
                         log.info("已关闭重复沟通，跳过已沟通Boss | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                         try { detailPage.close(); } catch (Exception ignore) {}
-                        return false;
+                        return skipSubmission("已沟通过，当前账号关闭了重复沟通");
                     }
                     if (buttonText != null && (buttonText.contains("立即沟通")
                             || (buttonText.contains("继续沟通") && Boolean.TRUE.equals(config.getAllowRepeatChat())))) {
@@ -1290,20 +1303,20 @@ public class Boss {
                     detailPage.close();
                 } catch (Exception ignore) {
                 }
-                return false;
+                return skipSubmission("未找到可用的沟通入口");
             }
             if (repeatChat) {
                 repeatMessage = config.randomRepeatChatMessage();
                 if (repeatMessage == null) {
                     log.info("重复沟通消息列表为空，跳过岗位：{}", job.getJobName());
                     try { detailPage.close(); } catch (Exception ignore) {}
-                    return false;
+                    return skipSubmission("未配置重复沟通消息");
                 }
             }
             if (progressCallback != null) progressCallback.accept("正在打开沟通页面：" + job.getJobName(), null, null);
             BossChatNavigator.Chat chat = navigator.open(chatBtn.first(), repeatChat,
                     Boolean.TRUE.equals(config.getAllowRepeatChat()), shouldStopCallback, 20_000);
-            if (chat == null) return false;
+            if (chat == null) return skipSubmission("未打开可用的沟通页面");
             detailPage = chat.page();
             repeatChat = chat.repeat();
             previouslyContacted=repeatChat;
@@ -1312,7 +1325,7 @@ public class Boss {
                 repeatMessage = config.randomRepeatChatMessage();
                 if (repeatMessage == null) {
                     log.info("重复沟通消息列表为空，跳过岗位：{}", job.getJobName());
-                    return false;
+                    return skipSubmission("未配置重复沟通消息");
                 }
             }
             Locator inputLocator = chat.input();
@@ -1332,31 +1345,33 @@ public class Boss {
                             progressCallback.accept("AI判断不匹配，跳过当前岗位：" + job.getJobName(), 0, 0);
                         }
                         try { detailPage.close(); } catch (Exception ignore) {}
-                        return false;
+                        lastSubmissionStatus = "已过滤";
+                        return skipSubmission("AI 判断岗位与求职方向不匹配");
                     }
                     aiMessage = decision.message();
                 }
             }
             String message = repeatChat ? repeatMessage : (isValidString(aiMessage) ? aiMessage : config.getSayHi());
-            if(!navigator.prepareToSend(shouldStopCallback,2_000))return false;
+            if(!navigator.prepareToSend(shouldStopCallback,2_000))return skipSubmission("沟通页面未就绪或任务已取消");
 
             if (progressCallback != null) progressCallback.accept("正在发送招呼语：" + job.getJobName(), null, null);
             // 6. 输入打招呼语
             Locator input = inputLocator.first();
-            if(!navigator.fillMessage(input,message,shouldStopCallback,2_000))return false;
+            if(!navigator.fillMessage(input,message,shouldStopCallback,2_000))return skipSubmission("招呼语未能填入输入框或任务已取消");
 
             // 7. 点击发送按钮（div.send-message 或 button.btn-send）
             Locator sendText = detailPage.locator("div.send-message, button[type='send'].btn-send, button.btn-send");
-            boolean sendSuccess = false;
+            LocalDateTime sentAt = null;
             if (sendText.count() > 0) {
-                if(!navigator.prepareToSend(shouldStopCallback,2_000))return false;
-                if(!navigator.sendMessage(sendText.first(),shouldStopCallback,2_000))return false;
+                if(!navigator.prepareToSend(shouldStopCallback,2_000))return skipSubmission("沟通页面未就绪或任务已取消");
+                if(!navigator.sendMessage(sendText.first(),shouldStopCallback,2_000))return skipSubmission("招呼语发送操作未完成");
+                sentAt = LocalDateTime.now();
                 PlaywrightUtil.sleep(1);
                 navigator.checkBlockingNotices();
-                sendSuccess = true;
             } else {
                 log.warn("未找到发送按钮，自动跳过！岗位：{}", job.getJobName());
             }
+            boolean sendSuccess = sentAt != null;
 
             // 8. 发送图片简历（可选）
             boolean imgResume = false;
@@ -1374,35 +1389,16 @@ public class Boss {
             }
             PlaywrightUtil.sleep(1);
 
-            // 10. 更新数据库投递状态 & 成功投递加入结果
+            // 10. 保存本次沟通结果，由调用方和岗位资料一起写入。
             if (sendSuccess) {
                 lastSubmissionOutcome=previouslyContacted?BossCityYieldMonitor.Outcome.UNAVAILABLE:BossCityYieldMonitor.Outcome.NEW_JOB;
-                // 从详情链接提取 encrypt_id，并映射到 encrypt_user_id
-                String encryptId = extractEncryptId(detailUrl);
-                String encryptUserId = encryptId != null ? encryptIdToUserId.get(encryptId) : null;
-                if (encryptId != null && encryptUserId != null) {
-                    try {
-            bossService.updateDeliveryStatus(encryptId, encryptUserId, "已投递");
-                        log.info("投递成功 | 公司：{} | 岗位：{} | encryptId：{} | encryptUserId：{}", job.getCompanyName(), job.getJobName(), encryptId, encryptUserId);
-                    } catch (Exception e) {
-                        log.warn("更新投递状态为已投递失败：{}", e.getMessage());
-                    }
-                } else {
-                    log.debug("未能找到 encryptId/encryptUserId 用于更新投递状态，detailUrl: {}", detailUrl);
-                }
+                lastSubmissionStatus = "已投递";
+                lastSubmissionReason = repeatChat ? "已发送重复沟通消息" : "已完成招呼语发送流程";
+                lastDeliveredAt = sentAt;
                 resultList.add(job);
             } else {
-                // 若发生发送失败，也进行状态更新
-                String encryptId = extractEncryptId(detailUrl);
-                String encryptUserId = encryptId != null ? encryptIdToUserId.get(encryptId) : null;
-                if (encryptId != null && encryptUserId != null) {
-                    try {
-            bossService.updateDeliveryStatus(encryptId, encryptUserId, "投递失败");
-                        log.warn("投递失败 | 公司：{} | 岗位：{} | encryptId：{} | encryptUserId：{}", job.getCompanyName(), job.getJobName(), encryptId, encryptUserId);
-                    } catch (Exception e) {
-                        log.warn("更新投递状态为投递失败异常：{}", e.getMessage());
-                    }
-                }
+                lastSubmissionStatus = "投递失败";
+                lastSubmissionReason = "聊天页面未找到发送按钮";
             }
             return sendSuccess;
         } catch (BossJobBlockedException blocked) {
@@ -1411,7 +1407,7 @@ public class Boss {
             log.info(reason);
             if (progressCallback != null) progressCallback.accept(reason, null, null);
             // try-with-resources 已关闭本岗位详情及其弹窗，主列表和其他账号不受影响。
-            return false;
+            return skipSubmission(blocked.getMessage());
         } catch (BossChatInteractionException | com.microsoft.playwright.TimeoutError unavailable) {
             if(page!=null && page.isClosed())throw unavailable;
             lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNCERTAIN;
@@ -1419,7 +1415,22 @@ public class Boss {
             String reason="自动跳过（未投递）："+job.getJobName()+" · "+detail+"，继续后续岗位";
             log.warn(reason);
             if(progressCallback!=null)progressCallback.accept(reason,null,null);
-            return false;
+            lastSubmissionStatus = "投递失败";
+            return skipSubmission(detail);
+        }
+    }
+
+    private boolean skipSubmission(String reason) {
+        lastSubmissionReason = reason;
+        return false;
+    }
+
+    private void recordLegacyJobResult(String encryptId, String status, String reason, LocalDateTime deliveredAt) {
+        if (encryptId == null || encryptId.isBlank()) return;
+        try {
+            bossService.updateDeliveryStatus(encryptId, encryptIdToUserId.get(encryptId), status, reason, deliveredAt);
+        } catch (Exception e) {
+            log.warn("写入岗位投递结果失败：{}", e.getMessage());
         }
     }
 

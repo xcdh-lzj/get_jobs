@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -54,6 +55,11 @@ public class BossJobDataEntity {
 
     @TableField("delivery_status")
     private String deliveryStatus; // 默认 未投递 / 已投递 / 已过滤 / 投递失败
+
+    private String deliveryReason;
+
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime deliveredAt;
 
     @TableField("job_description")
     private String jobDescription;

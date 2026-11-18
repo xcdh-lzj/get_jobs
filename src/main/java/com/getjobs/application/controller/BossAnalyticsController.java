@@ -1,13 +1,16 @@
 package com.getjobs.application.controller;
 
-import com.getjobs.application.entity.BossJobDataEntity;
+import com.getjobs.application.service.BossAccountContext;
 import com.getjobs.application.service.BossService;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @RestController
 @CrossOrigin(origins = "*")
@@ -34,15 +37,8 @@ public class BossAnalyticsController {
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter
     ) {
-        List<String> statusList = null;
-        if (statuses != null && !statuses.trim().isEmpty()) {
-            statusList = Arrays.stream(statuses.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .collect(Collectors.toList());
-        }
         return bossService.getBossStats(
-                statusList,
+                parseStatuses(statuses),
                 location,
                 experience,
                 degree,
@@ -69,15 +65,8 @@ public class BossAnalyticsController {
             @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
             @RequestParam(value = "size", required = false, defaultValue = "20") Integer size
     ) {
-        List<String> statusList = null;
-        if (statuses != null && !statuses.trim().isEmpty()) {
-            statusList = Arrays.stream(statuses.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .collect(Collectors.toList());
-        }
         return bossService.listBossJobs(
-                statusList,
+                parseStatuses(statuses),
                 location,
                 experience,
                 degree,
@@ -88,6 +77,32 @@ public class BossAnalyticsController {
                 size,
                 filterHeadhunter != null && filterHeadhunter
         );
+    }
+
+    @GetMapping(value = "/jobs.csv", produces = "text/csv;charset=UTF-8")
+    public ResponseEntity<byte[]> export(
+            @RequestParam(value = "statuses", required = false) String statuses,
+            @RequestParam(value = "location", required = false) String location,
+            @RequestParam(value = "experience", required = false) String experience,
+            @RequestParam(value = "degree", required = false) String degree,
+            @RequestParam(value = "minK", required = false) Double minK,
+            @RequestParam(value = "maxK", required = false) Double maxK,
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter
+    ) {
+        var jobs = bossService.exportBossJobs(parseStatuses(statuses), location, experience, degree,
+                minK, maxK, keyword, Boolean.TRUE.equals(filterHeadhunter));
+        String name = "boss_jobs_" + BossAccountContext.id() + "_" + LocalDate.now() + ".csv";
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + name + "\"")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(BossJobCsv.encode(jobs));
+    }
+
+    private static List<String> parseStatuses(String value) {
+        return value == null ? List.of() : Arrays.stream(value.split(","))
+                .map(String::trim).filter(s -> !s.isEmpty()).toList();
     }
 
     /**

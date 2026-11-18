@@ -14,6 +14,8 @@ import com.getjobs.application.mapper.BossConfigMapper;
 import com.getjobs.application.mapper.BossIndustryMapper;
 import com.getjobs.application.mapper.BossOptionMapper;
 import com.getjobs.worker.boss.BossConfig;
+import com.getjobs.worker.boss.review.BossCandidateCollector;
+import com.getjobs.worker.boss.review.BossReviewJob;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,8 +25,8 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -725,15 +727,15 @@ public class BossService {
     }
 
     /** 精准采集没有点击沟通；按账号和岗位ID更新资料，保留既有成功投递记录。 */
-    public void recordPrecisionJob(com.getjobs.worker.boss.review.BossReviewJob job, String status) {
-        String encryptId = job.id().isBlank()
-                ? com.getjobs.worker.boss.review.BossCandidateCollector.idFromUrl(job.detailUrl()) : job.id();
+    public void recordPrecisionJob(BossReviewJob job, String status, String reason, LocalDateTime deliveredAt) {
+        String encryptId = job.id().isBlank() ? BossCandidateCollector.idFromUrl(job.detailUrl()) : job.id();
         if (encryptId.isBlank() || job.detailUrl().isBlank()) return;
         var existing = bossJobDataMapper.selectOne(new QueryWrapper<BossJobDataEntity>()
                 .eq("account_id", BossAccountContext.id()).eq("encrypt_id", encryptId).last("LIMIT 1"));
         var entity = new BossJobDataEntity(); entity.setEncryptId(encryptId); entity.setAccountId(BossAccountContext.id());
         if (!job.title().isBlank()) entity.setJobName(job.title());
         if (!job.company().isBlank()) entity.setCompanyName(job.company());
+        if (!job.companyScale().isBlank()) entity.setCompanyScale(job.companyScale());
         if (!job.city().isBlank()) entity.setLocation(job.city());
         if (!job.salary().isBlank()) entity.setSalary(job.salary());
         if (!job.experience().isBlank()) entity.setExperience(job.experience());
@@ -742,7 +744,11 @@ public class BossService {
         if (!job.activeStatus().isBlank()) entity.setHrActiveStatus(job.activeStatus());
         entity.setJobUrl(job.detailUrl());
         if (!job.description().isBlank()) entity.setJobDescription(job.description());
-        entity.setDeliveryStatus(existing != null && "已投递".equals(existing.getDeliveryStatus()) ? "已投递" : status);
+        if (existing == null || !"已投递".equals(existing.getDeliveryStatus()) || deliveredAt != null) {
+            entity.setDeliveryStatus(status);
+            entity.setDeliveryReason(reason);
+            if (deliveredAt != null) entity.setDeliveredAt(deliveredAt.truncatedTo(ChronoUnit.SECONDS));
+        }
         if (existing == null) insertBossJob(entity);
         else { entity.setId(existing.getId()); entity.setUpdatedAt(LocalDateTime.now()); bossJobDataMapper.updateById(entity); }
     }
@@ -750,10 +756,13 @@ public class BossService {
     /**
      * 更新投递状态（WHERE encrypt_id = ? AND encrypt_user_id = ?）
      */
-    public void updateDeliveryStatus(String encryptId, String encryptUserId, String status) {
+    public void updateDeliveryStatus(String encryptId, String encryptUserId, String status,
+                                     String reason, LocalDateTime deliveredAt) {
         if (encryptId == null || status == null) return;
         BossJobDataEntity update = new BossJobDataEntity();
         update.setDeliveryStatus(status);
+        update.setDeliveryReason(reason);
+        if (deliveredAt != null) update.setDeliveredAt(deliveredAt.truncatedTo(ChronoUnit.SECONDS));
         update.setUpdatedAt(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
@@ -761,6 +770,9 @@ public class BossService {
         uw.eq("encrypt_id", encryptId);
         if (encryptUserId != null) {
             uw.eq("encrypt_user_id", encryptUserId);
+        }
+        if (!"已投递".equals(status)) {
+            uw.and(w -> w.isNull("delivery_status").or().ne("delivery_status", "已投递"));
         }
         bossJobDataMapper.update(update, uw);
     }
@@ -884,26 +896,8 @@ public class BossService {
         charts.hrActivity = new ArrayList<>();
 
         try {
-            // 构造与列表相同的筛选条件
-            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-        wrapper.eq("account_id", BossAccountContext.id());
-            if (statuses != null && !statuses.isEmpty()) {
-                wrapper.in("delivery_status", statuses);
-            }
-            if (StringUtils.isNotBlank(location)) wrapper.eq("location", location);
-            if (StringUtils.isNotBlank(experience)) wrapper.eq("experience", experience);
-            if (StringUtils.isNotBlank(degree)) wrapper.eq("degree", degree);
-
-            if (StringUtils.isNotBlank(keyword)) {
-                wrapper.and(w -> w.like("company_name", keyword)
-                        .or().like("job_name", keyword)
-                        .or().like("hr_name", keyword));
-            }
-            if (filterHeadhunter) {
-                wrapper.and(w -> w.isNull("hr_position").or().notLike("hr_position", "猎头"));
-            }
-            wrapper.orderByDesc("created_at");
-
+            var wrapper = jobHistoryFilters(statuses, location, experience, degree, keyword, filterHeadhunter);
+            wrapper.orderByDesc("created_at", "id");
             List<BossJobDataEntity> all = bossJobDataMapper.selectList(wrapper);
 
             // 内存进行薪资区间过滤（按中位数K）
@@ -911,18 +905,7 @@ public class BossService {
             double sumMedian = 0.0; long countMedian = 0;
             for (BossJobDataEntity e : all) {
                 SalaryInfo info = parseSalary(e.getSalary());
-                boolean passSalary;
-                if (minK == null && maxK == null) {
-                    passSalary = true;
-                } else {
-                    if (info == null || info.medianK == null) passSalary = false; // 面议或不可解析
-                    else {
-                        boolean ok = true;
-                        if (minK != null) ok = ok && (info.medianK >= minK);
-                        if (maxK != null) ok = ok && (info.medianK <= maxK);
-                        passSalary = ok;
-                    }
-                }
+                boolean passSalary = matchesHistorySalary(info, minK, maxK);
                 if (passSalary) {
                     filtered.add(e);
                     if (info != null && info.medianK != null) { sumMedian += info.medianK; countMedian++; }
@@ -1046,9 +1029,43 @@ public class BossService {
             int size,
             boolean filterHeadhunter
     ) {
-        if (page <= 0) page = 1;
+        page = Math.max(1, page);
         if (size <= 0) size = 20;
 
+        var wrapper = jobHistoryFilters(statuses, location, experience, degree, keyword, filterHeadhunter);
+        PagedResult result = new PagedResult();
+        result.size = size;
+        if (minK == null && maxK == null) {
+            result.total = bossJobDataMapper.selectCount(wrapper);
+            result.page = validHistoryPage(page, size, result.total);
+            long offset = (long) (result.page - 1) * size;
+            result.items = result.total == 0 ? List.of() : bossJobDataMapper.selectList(
+                    wrapper.orderByDesc("created_at", "id").last("LIMIT " + size + " OFFSET " + offset));
+        } else {
+            var filtered = filterHistorySalary(wrapper, minK, maxK);
+            result.total = filtered.size();
+            result.page = validHistoryPage(page, size, result.total);
+            int from = (result.page - 1) * size;
+            result.items = filtered.subList(from, (int) Math.min(result.total, (long) from + size));
+        }
+        return result;
+    }
+
+    public List<BossJobDataEntity> exportBossJobs(List<String> statuses, String location, String experience,
+                                                String degree, Double minK, Double maxK, String keyword,
+                                                boolean filterHeadhunter) {
+        return filterHistorySalary(jobHistoryFilters(statuses, location, experience, degree, keyword,
+                filterHeadhunter), minK, maxK);
+    }
+
+    private static int validHistoryPage(int page, int size, long total) {
+        long lastPage = total == 0 ? 1 : 1 + (total - 1) / size;
+        return (int) Math.min(page, lastPage);
+    }
+
+    private QueryWrapper<BossJobDataEntity> jobHistoryFilters(List<String> statuses, String location,
+                                                             String experience, String degree, String keyword,
+                                                             boolean filterHeadhunter) {
         QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("account_id", BossAccountContext.id());
         if (statuses != null && !statuses.isEmpty()) {
@@ -1064,41 +1081,24 @@ public class BossService {
                     .or().like("hr_name", keyword));
         }
 
-        // 查询阶段过滤猎头：hr_position 不包含“猎头”或为空
         if (filterHeadhunter) {
-            wrapper.and(w -> w.isNull("hr_position").or().notLike("hr_position", "猎头"));
+            wrapper.and(w -> w.isNull("hr_position").or(n ->
+                    n.notLike("hr_position", "猎头").notLike("hr_position", "獵頭")));
         }
+        return wrapper;
+    }
 
-        wrapper.orderByDesc("created_at");
+    private List<BossJobDataEntity> filterHistorySalary(QueryWrapper<BossJobDataEntity> wrapper,
+                                                       Double minK, Double maxK) {
+        var jobs = bossJobDataMapper.selectList(wrapper.orderByDesc("created_at", "id"));
+        if (minK == null && maxK == null) return jobs;
+        return jobs.stream().filter(job -> matchesHistorySalary(parseSalary(job.getSalary()), minK, maxK)).toList();
+    }
 
-        // 取符合条件的记录（猎头已在查询阶段过滤），随后在内存进行薪资区间过滤与分页
-        List<BossJobDataEntity> all = bossJobDataMapper.selectList(wrapper);
-
-        List<BossJobDataEntity> filtered = new ArrayList<>();
-        for (BossJobDataEntity e : all) {
-            if (minK == null && maxK == null) {
-                filtered.add(e);
-            } else {
-                SalaryInfo info = parseSalary(e.getSalary());
-                if (info == null || info.medianK == null) continue; // 面议或不可解析
-                boolean ok = true;
-                if (minK != null) ok = ok && (info.medianK >= minK);
-                if (maxK != null) ok = ok && (info.medianK <= maxK);
-                if (ok) filtered.add(e);
-            }
-        }
-
-        int total = filtered.size();
-        int from = Math.max(0, (page - 1) * size);
-        int to = Math.min(total, from + size);
-        List<BossJobDataEntity> pageItems = from >= to ? Collections.emptyList() : filtered.subList(from, to);
-
-        PagedResult result = new PagedResult();
-        result.items = pageItems;
-        result.total = total;
-        result.page = page;
-        result.size = size;
-        return result;
+    private static boolean matchesHistorySalary(SalaryInfo salary, Double minK, Double maxK) {
+        if (minK == null && maxK == null) return true;
+        return salary != null && salary.medianK != null
+                && (minK == null || salary.medianK >= minK) && (maxK == null || salary.medianK <= maxK);
     }
 
     /**

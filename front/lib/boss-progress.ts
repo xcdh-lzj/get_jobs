@@ -68,3 +68,8 @@ export function batchProgressPercent(progress: Pick<BossTaskProgress, 'current' 
     ? Math.max(0, Math.min(100, Math.round(progress.current / progress.total * 100)))
     : null
 }
+
+export function bossHistoryProgressKey(progress?: BossTaskProgress): string {
+  if (!progress) return ''
+  return [progress.instanceId, progress.taskId, progress.state, progress.processedCount].join('/')
+}

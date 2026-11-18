@@ -10,6 +10,8 @@ export interface BossHistoryJob {
   hrPosition?: string
   hrActiveStatus?: string
   deliveryStatus?: string
+  deliveryReason?: string
+  deliveredAt?: string
   jobUrl?: string
   recruitmentStatus?: string
   companyAddress?: string
@@ -19,6 +21,10 @@ export interface BossHistoryJob {
   companyScale?: string
   jobDescription?: string
   createdAt?: string
+}
+
+export function formatBossDeliveryTime(value?: string): string {
+  return value?.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:$|[.Z+-])/)?.slice(1, 3).join(' ') ?? ''
 }
 
 // Validate the saved detail address without probing it; retain its original query parameters.

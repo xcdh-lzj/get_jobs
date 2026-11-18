@@ -73,6 +73,7 @@ public class BossAccountService implements org.springframework.boot.CommandLineR
                     if (!scoped) s.execute("ALTER TABLE " + table + " ADD COLUMN account_id INTEGER NOT NULL DEFAULT 1");
                     s.execute("CREATE INDEX IF NOT EXISTS idx_" + table + "_account ON " + table + "(account_id)");
                 }
+                migrateJobHistory(s);
                 // 旧库按全局 (type,value) 去重，会阻止两个账号保存相同黑名单。
                 // 仅替换该已知索引，保留所有表、条目 ID 和时间戳；与账号迁移一起原子提交。
                 if(globalBlacklistIndex) {
@@ -83,6 +84,55 @@ public class BossAccountService implements org.springframework.boot.CommandLineR
                 c.commit();
             } catch (Exception e) { c.rollback(); throw e; }
         } catch (Exception e) { throw new IllegalStateException("Boss 多账号数据库迁移失败，原数据未被覆盖", e); }
+    }
+
+    private void migrateJobHistory(Statement statement) throws java.sql.SQLException {
+        var columns = new java.util.HashSet<String>();
+        try (var rows = statement.executeQuery("PRAGMA table_info('boss_data')")) {
+            while (rows.next()) columns.add(rows.getString("name"));
+        }
+        if (!columns.contains("delivered_at")) {
+            statement.execute("ALTER TABLE boss_data ADD COLUMN delivered_at TEXT");
+        }
+        if (columns.contains("delivery_reason")) return;
+        statement.execute("ALTER TABLE boss_data ADD COLUMN delivery_reason TEXT");
+        try (var rows = statement.executeQuery("""
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name IN ('boss_review_results', 'boss_review_runs')
+                """)) {
+            if (!rows.next() || rows.getInt(1) != 2) return;
+        }
+        // 只恢复能按账号、岗位和结果状态对应上的历史审核原因。
+        statement.executeUpdate("""
+                WITH reviews AS (
+                    SELECT r.id, r.account_id, r.created_at,
+                        CASE WHEN json_valid(r.result_json) THEN r.result_json END AS payload,
+                        CASE
+                            WHEN r.decision='reject' THEN '已过滤'
+                            WHEN r.decision='review' THEN '未投递'
+                            WHEN r.decision='pass' AND r.delivery_state='sent' THEN '已投递'
+                        END AS status
+                    FROM boss_review_results r JOIN boss_review_runs run
+                        ON run.id=r.run_id AND run.account_id=r.account_id
+                    WHERE run.mode IN ('delivery', 'scan')
+                ), reasons AS (
+                    SELECT account_id, status,
+                        json_extract(payload, '$.job.id') AS job_id,
+                        TRIM(json_extract(payload, '$.reason')) AS reason,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY account_id, status, json_extract(payload, '$.job.id')
+                            ORDER BY created_at DESC, id DESC
+                        ) AS rank
+                    FROM reviews
+                    WHERE status IS NOT NULL AND TRIM(json_extract(payload, '$.reason')) <> ''
+                )
+                UPDATE boss_data
+                SET delivery_reason = '历史审核：' || reasons.reason
+                FROM reasons
+                WHERE boss_data.account_id = reasons.account_id
+                    AND boss_data.encrypt_id = reasons.job_id AND reasons.job_id <> ''
+                    AND boss_data.delivery_status = reasons.status AND reasons.rank = 1
+                """);
     }
 
     @Override public void run(String... args) {

@@ -47,12 +47,16 @@ class BossBlockedSubmissionTest {
             assertTrue(boss.getResultList().isEmpty());
             assertEquals(BossCityYieldMonitor.Outcome.UNAVAILABLE,
                     org.springframework.test.util.ReflectionTestUtils.getField(boss, "lastSubmissionOutcome"));
+            assertNull(org.springframework.test.util.ReflectionTestUtils.getField(boss, "lastDeliveredAt"));
+            assertEquals("Boss 提示工作经历与该岗位要求不匹配",
+                    org.springframework.test.util.ReflectionTestUtils.getField(boss, "lastSubmissionReason"));
             assertTrue(messages.stream().anyMatch(text -> text.startsWith("自动跳过（未投递）") && text.contains("工作经历")));
             verify(navigators.constructed().getFirst()).close();
             if (!stage.equals("after-send")) verify(send, never()).click();
             assertEquals(true, method.invoke(boss, "合成方向", next));
             assertEquals(java.util.List.of(next), boss.getResultList());
+            assertInstanceOf(java.time.LocalDateTime.class,
+                    org.springframework.test.util.ReflectionTestUtils.getField(boss, "lastDeliveredAt"));
         }
-        verify(service, never()).updateDeliveryStatus(anyString(), anyString(), eq("已投递"));
     }
 }

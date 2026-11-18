@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 import java.nio.file.*;
+import java.time.LocalDateTime;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -203,13 +204,20 @@ class BossAccountDataTest {
             job.setJobName("Java 开发"); job.setCompanyName("示例公司"); job.setDeliveryStatus("未投递");
             boss.insertBossJob(job);
         }
-        boss.updateDeliveryStatus("same-job","same-recruiter","已投递");
+        var sentAt = LocalDateTime.of(2026, 11, 18, 15, 8, 7);
+        boss.updateDeliveryStatus("same-job", "same-recruiter", "已投递", "已完成招呼语发送流程", sentAt);
+        boss.updateDeliveryStatus("same-job", "same-recruiter", "已过滤", "再次筛选命中黑名单", null);
         assertEquals(1,boss.getBossStats().kpi.delivered);
+        var sent = boss.listBossJobs(List.of("已投递"), null, null, null, null, null, null, 1, 20, false).items.getFirst();
+        assertEquals(sentAt, sent.getDeliveredAt());
+        assertEquals("已完成招呼语发送流程", sent.getDeliveryReason());
         try (var scope=BossAccountContext.use(second)) {
             assertEquals(0,boss.getBossStats().kpi.delivered);
             assertEquals(1,boss.getBossStats().kpi.pending);
             var rows=boss.listBossJobs(null,null,null,null,null,null,null,1,20,false);
             assertEquals(1,rows.total); assertEquals("未投递",rows.items.getFirst().getDeliveryStatus());
+            assertNull(rows.items.getFirst().getDeliveredAt());
+            assertNull(rows.items.getFirst().getDeliveryReason());
             boss.ensureBossDataColumnOrder();
             assertEquals(second,rows.items.getFirst().getAccountId());
         }
@@ -225,16 +233,81 @@ class BossAccountDataTest {
         var existing=new BossJobDataEntity();existing.setEncryptId("same-job");existing.setJobName("原岗位");
         existing.setCompanyName("原公司");existing.setLocation("广州");existing.setSalary("20-30K");
         existing.setJobDescription("完整原始JD");existing.setHrPosition("技术负责人");existing.setDeliveryStatus("已投递");boss.insertBossJob(existing);
-        var partial=new com.getjobs.worker.boss.review.BossReviewJob("same-job","更新后的岗位名","","","","","","","","","https://www.zhipin.com/job_detail/same-job.html","");
-        boss.recordPrecisionJob(partial,"已过滤");
+        var sentAt = LocalDateTime.of(2026, 11, 18, 15, 8, 7, 950_000_000);
+        var partial=new com.getjobs.worker.boss.review.BossReviewJob("same-job","更新后的岗位名","","","","","","","","","https://www.zhipin.com/job_detail/same-job.html","","100-499人");
+        boss.recordPrecisionJob(partial, "已投递", "已完成招呼语发送流程", sentAt);
+        boss.recordPrecisionJob(partial, "已过滤", "再次筛选命中黑名单", null);
         var saved=session.getMapper(BossJobDataMapper.class).selectById(existing.getId());
         assertEquals("更新后的岗位名",saved.getJobName());assertEquals("原公司",saved.getCompanyName());
         assertEquals("完整原始JD",saved.getJobDescription());assertEquals("技术负责人",saved.getHrPosition());
         assertEquals("20-30K",saved.getSalary());assertEquals("已投递",saved.getDeliveryStatus());
+        assertEquals("100-499人", saved.getCompanyScale());
+        assertEquals("已完成招呼语发送流程", saved.getDeliveryReason());
+        assertEquals(sentAt.withNano(0), saved.getDeliveredAt());
         long second=accounts.create("第二账号",null).id();
-        try(var scope=BossAccountContext.use(second)) {boss.recordPrecisionJob(partial,"未投递");}
+        try(var scope=BossAccountContext.use(second)) {boss.recordPrecisionJob(partial,"未投递","未配置招呼语",null);}
         assertEquals("已投递",session.getMapper(BossJobDataMapper.class).selectById(existing.getId()).getDeliveryStatus());
         assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM boss_data",Integer.class));
+    }
+
+    @Test void legacyJobHistoryRestoresOnlyMatchingReviewReasonsAndKeepsActualTimeUnknown() {
+        jdbc.execute("ALTER TABLE boss_data DROP COLUMN delivery_reason");
+        jdbc.execute("ALTER TABLE boss_data DROP COLUMN delivered_at");
+        jdbc.execute("CREATE TABLE boss_review_runs(id TEXT, account_id INTEGER, mode TEXT)");
+        jdbc.execute("CREATE TABLE boss_review_results(id INTEGER, run_id TEXT, account_id INTEGER, decision TEXT, delivery_state TEXT, result_json TEXT, created_at INTEGER)");
+        jdbc.execute("INSERT INTO boss_review_runs VALUES('delivery',1,'delivery'),('sample',1,'examples'),('other',2,'delivery')");
+        jdbc.execute("""
+                INSERT INTO boss_data(account_id,encrypt_id,delivery_status,created_at) VALUES
+                    (1,'matching','已投递','2026-11-18T11:30:00'),
+                    (1,'mismatched','未投递','2026-11-18T11:30:00'),
+                    (2,'matching','已投递','2026-11-18T11:30:00')
+                """);
+        jdbc.execute("""
+                INSERT INTO boss_review_results VALUES
+                    (1,'delivery',1,'pass','sent','{"job":{"id":"matching"},"reason":"负责 Agent 开发"}',10),
+                    (2,'sample',1,'pass','sent','{"job":{"id":"matching"},"reason":"模拟结果"}',20),
+                    (3,'delivery',1,'reject','not_sent','{"job":{"id":"mismatched"},"reason":"过滤原因"}',30),
+                    (4,'other',2,'pass','not_sent','{"job":{"id":"matching"},"reason":"另一账号"}',40),
+                    (5,'delivery',1,'pass','sent','invalid JSON',50)
+                """);
+        accounts.migrate();
+        accounts.migrate();
+        assertEquals(List.of("历史审核：负责 Agent 开发"), jdbc.queryForList(
+                "SELECT delivery_reason FROM boss_data WHERE delivery_reason IS NOT NULL", String.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM boss_data WHERE delivered_at IS NOT NULL", Integer.class));
+    }
+
+    @Test void historyExportUsesTheSameAccountAndAppliedFiltersAsThePagedList() throws Exception {
+        long other = accounts.create("第二账号", null).id();
+        for (long account : new long[]{1, other}) try (var scope = BossAccountContext.use(account)) {
+            for (int i = 0; i < 4; i++) {
+                var row = new BossJobDataEntity();
+                row.setCompanyName("示例公司 " + account);
+                row.setJobName("Agent " + i);
+                row.setSalary(i == 0 ? "30-40K" : "18-22K");
+                row.setHrPosition(i == 1 ? "獵頭顾问" : "技术负责人");
+                row.setDeliveryStatus("已过滤");
+                row.setDeliveryReason("示例过滤原因");
+                boss.insertBossJob(row);
+            }
+        }
+        var rows = boss.listBossJobs(List.of("已过滤"), null, null, null, 15.0, 25.0, "Agent", 1, 1, true);
+        var controller = new com.getjobs.application.controller.BossAnalyticsController(boss);
+        var response = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build()
+                .perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/jobs.csv")
+                        .param("statuses", "已过滤").param("minK", "15").param("maxK", "25")
+                        .param("keyword", "Agent").param("filterHeadhunter", "true"))
+                .andReturn().getResponse();
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getHeader("Content-Disposition").startsWith("attachment;"));
+        String csv = response.getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(2, rows.total);
+        assertEquals(1, rows.items.size());
+        assertEquals(3, csv.lines().count());
+        assertTrue(csv.contains(rows.items.getFirst().getJobName()));
+        assertTrue(csv.contains("示例过滤原因"));
+        assertFalse(csv.contains("示例公司 " + other));
+        assertFalse(csv.contains("Agent 0") || csv.contains("Agent 1"));
     }
 
     @Test void httpRequestsScopeUpdatesAndStreamsAndRejectCrossAccountAndLockedWrites() throws Exception {

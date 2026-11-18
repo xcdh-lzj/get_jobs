@@ -40,7 +40,8 @@ final class BossReviewDetails {
                     full=new BossReviewJob(id,info.optString("jobName",basic.title()),company==null?basic.company():company.optString("brandName",basic.company()),
                             info.optString("locationName",basic.city()),info.optString("salaryDesc",basic.salary()),info.optString("experienceName",basic.experience()),
                             info.optString("degreeName",basic.degree()),boss==null?basic.recruiterTitle():boss.optString("title",basic.recruiterTitle()),
-                            activityOr(BossHrActivityReader.fromJson(boss),basic.activeStatus()),info.optString("postDescription",""),basic.detailUrl(),basic.keyword());
+                            activityOr(BossHrActivityReader.fromJson(boss),basic.activeStatus()),info.optString("postDescription",""),
+                            basic.detailUrl(),basic.keyword(),company==null?basic.companyScale():company.optString("scaleName",basic.companyScale()));
                 }
             }
             if(full.description().isBlank()) {

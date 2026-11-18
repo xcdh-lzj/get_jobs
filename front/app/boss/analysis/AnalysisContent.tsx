@@ -10,8 +10,8 @@ import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
 import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
 
-import BossJobRecordDialog from "./BossJobRecordDialog"
-import BossJobLink from "./BossJobLink"
+import BossJobHistoryTable from "./BossJobHistoryTable"
+import { bossUrl } from "@/lib/boss-accounts"
 import type { BossHistoryJob as BossJob } from "@/lib/boss-history"
 import { sameAnalysisChart, type AnalysisChartProps } from "@/lib/boss-analysis-chart"
 
@@ -48,7 +48,6 @@ type PagedResult = {
   size: number
 }
 
-import { API_BASE } from "@/lib/api"
 // 通用分类颜色（用于柱状/饼状图每个分类不同颜色）
 const CATEGORY_COLORS = [
   "#3b82f6",
@@ -208,274 +207,167 @@ const ChartCanvas = memo(function ChartCanvas({
   return <canvas ref={canvasRef} className="w-full h-64" />
 }, sameAnalysisChart)
 
-function AnalysisContent({ showHeader = false, accountId = 1 }: { showHeader?: boolean; accountId?: number }) {
+const STATUS_OPTIONS = ["未投递", "已投递", "已过滤", "投递失败"]
+
+function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progressConnection }: {
+  showHeader?: boolean
+  accountId?: number
+  progressKey: string
+  progressConnection: "connecting" | "live" | "reconnecting"
+}) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [loadingStats, setLoadingStats] = useState(true)
-
-  const [selectedRecord, setSelectedRecord] = useState<BossJob | null>(null)
-  const [items, setItems] = useState<BossJob[]>([])
-  const [total, setTotal] = useState(0)
+  const [statsRefresh, setStatsRefresh] = useState(0)
+  const [list, setList] = useState<(PagedResult & { url: string; syncedAt: number }) | null>(null)
+  const [errorUrl, setErrorUrl] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [size, setSize] = useState(20)
-  // 分页输入（页码与每页条数），便于自定义跳转与控制
-  const [inputPage, setInputPage] = useState<number | string>(1)
-  const [inputSize, setInputSize] = useState<number | string>(20)
-
-  const [statuses, setStatuses] = useState<string[]>([]) // 默认不勾选任何状态
-  const [location, setLocation] = useState<string>("")
-  const [experience, setExperience] = useState<string>("")
-  const [degree, setDegree] = useState<string>("")
-  const [minK, setMinK] = useState<string>("")
-  const [maxK, setMaxK] = useState<string>("")
-  const [keyword, setKeyword] = useState<string>("")
-  const [loadingList, setLoadingList] = useState(false)
-  const [reloading, setReloading] = useState(false)
+  const [inputPage, setInputPage] = useState("1")
+  const [appliedFilter, setAppliedFilter] = useState("")
+  const [statuses, setStatuses] = useState<string[]>([])
+  const [location, setLocation] = useState("")
+  const [experience, setExperience] = useState("")
+  const [degree, setDegree] = useState("")
+  const [minK, setMinK] = useState("")
+  const [maxK, setMaxK] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [filterHeadhunter, setFilterHeadhunter] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [filterHeadhunter, setFilterHeadhunter] = useState<boolean>(false)
+  const [exportError, setExportError] = useState(false)
+  const refreshList = useRef<() => void>(() => {})
+  const filterParams = new URLSearchParams(appliedFilter)
+  if (filterHeadhunter) filterParams.set("filterHeadhunter", "true")
+  const filterQuery = filterParams.toString()
+  const listParams = new URLSearchParams(filterQuery)
+  listParams.set("page", String(page))
+  listParams.set("size", String(size))
+  const listUrl = bossUrl("/api/boss/list?" + listParams, accountId)
+  const statsUrl = bossUrl("/api/boss/stats?" + filterQuery, accountId)
+  const currentList = list?.url === listUrl ? list : null
+  const total = currentList?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / size))
+  const listError = errorUrl === listUrl
 
-  // 查看全文弹窗
-  const [showTextDialog, setShowTextDialog] = useState(false)
-  const [textDialogTitle, setTextDialogTitle] = useState<string>("")
-  const [textDialogContent, setTextDialogContent] = useState<string>("")
-  const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
-
-  const openTextDialog = (title: string, content?: string) => {
-    setTextDialogTitle(title)
-    setTextDialogContent(content || "")
-    setShowTextDialog(true)
+  const goToPage = (value: number) => {
+    const next = Math.max(1, Math.min(value, pageCount))
+    setPage(next)
+    setInputPage(String(next))
   }
 
-  const selectDialogText = () => {
-    const el = textAreaRef.current
-    if (el) el.select()
-  }
-
-  const copyDialogText = async () => {
-    try {
-      await navigator.clipboard.writeText(textDialogContent || "")
-      alert("已复制到剪贴板")
-    } catch {
-      try {
-        const ta = document.createElement("textarea")
-        ta.value = textDialogContent || ""
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand("copy")
-        document.body.removeChild(ta)
-        alert("已复制到剪贴板")
-      } catch {
-        alert("复制失败，请手动选中复制")
-      }
-    }
-  }
-
-  const statusOptions = ["未投递", "已投递", "已过滤", "投递失败"]
-
-  // 仅显示日期（YYYY-MM-DD）
-  const formatDateOnly = (s?: string) => {
-    if (!s) return ""
-    const d = new Date(s)
-    if (!isNaN(d.getTime())) {
-      const y = d.getFullYear()
-      const m = String(d.getMonth() + 1).padStart(2, "0")
-      const day = String(d.getDate()).padStart(2, "0")
-      return `${y}-${m}-${day}`
-    }
-    // 非标准时间串，兜底截取前10位
-    return s.slice(0, 10)
-  }
-
-  const loadList = async (toPage = page, toSize = size) => {
-    const params = new URLSearchParams({ accountId: String(accountId) })
+  const applyFilters = () => {
+    const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
-    if (location) params.set("location", location)
-    if (experience) params.set("experience", experience)
-    if (degree) params.set("degree", degree)
-    if (minK) params.set("minK", String(Number(minK)))
-    if (maxK) params.set("maxK", String(Number(maxK)))
-    if (keyword) params.set("keyword", keyword)
-    if (filterHeadhunter) params.set("filterHeadhunter", "true")
-    params.set("page", String(toPage))
-    params.set("size", String(toSize))
-
-    try {
-      setLoadingList(true)
-      const res = await fetch(`${API_BASE}/api/boss/list?${params.toString()}`)
-      const data: PagedResult = await res.json()
-      // 前端兜底过滤猎头（避免后端未更新导致的显示异常）
-      const filteredItems = (data.items || []).filter(it => {
-        if (!filterHeadhunter) return true
-        const hp = (it.hrPosition || "").toLowerCase()
-        return !(hp.includes("猎头") || hp.includes("獵頭"))
-      })
-      setItems(filteredItems)
-      setTotal(data.total || 0)
-      setPage(data.page || toPage)
-      setSize(data.size || toSize)
-      setInputPage(data.page || toPage)
-      setInputSize(data.size || toSize)
-    } catch (e) {
-      console.error("fetch list failed", e)
-    } finally {
-      setLoadingList(false)
+    for (const [key, value] of Object.entries({ location, experience, degree, minK, maxK, keyword })) {
+      if (value.trim()) params.set(key, value.trim())
     }
-  }
-
-  // 统计图加载：与列表共享相同筛选条件
-  const loadStats = async () => {
-    const params = new URLSearchParams({ accountId: String(accountId) })
-    if (statuses.length) params.set("statuses", statuses.join(","))
-    if (location) params.set("location", location)
-    if (experience) params.set("experience", experience)
-    if (degree) params.set("degree", degree)
-    if (minK) params.set("minK", String(Number(minK)))
-    if (maxK) params.set("maxK", String(Number(maxK)))
-    if (keyword) params.set("keyword", keyword)
-    if (filterHeadhunter) params.set("filterHeadhunter", "true")
-
-    try {
-      setLoadingStats(true)
-      const res = await fetch(`${API_BASE}/api/boss/stats?${params.toString()}`)
-      const data: StatsResponse = await res.json()
-      setStats(data)
-    } catch (e) {
-      console.error("fetch stats failed", e)
-    } finally {
-      setLoadingStats(false)
-    }
+    setAppliedFilter(params.toString())
+    goToPage(1)
   }
 
   useEffect(() => {
     let active = true
-    // 合并首次加载，避免多个 effect 重复请求；清理时取消尚未开始的加载。
-    queueMicrotask(() => {
-      if (!active) return
-      void loadList(1, size)
-      void loadStats()
-    })
-    return () => { active = false }
-    // 其余筛选条件由“应用筛选”提交，输入时不自动查询。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, filterHeadhunter])
+    let timer: number | undefined
+    let request: AbortController | null = null
+    let queued = false
 
-  const onReload = async () => {
-    try {
-      setReloading(true)
-      const res = await fetch(`${API_BASE}/api/boss/reload?accountId=${accountId}`)
-      const data = await res.json()
-      console.log("reload", data)
-      await loadList(1, size)
-      await loadStats()
-    } catch (e) {
-      console.error("reload failed", e)
-    } finally {
-      setReloading(false)
+    // 一次只读取当前页，密集的进度事件合并成下一次刷新。
+    function scheduleRefresh() {
+      if (!active || timer !== undefined) return
+      if (request) {
+        queued = true
+        return
+      }
+      timer = window.setTimeout(() => {
+        timer = undefined
+        void load()
+      }, 180)
     }
+
+    async function load() {
+      const controller = new AbortController()
+      request = controller
+      const timeout = window.setTimeout(() => controller.abort(), 8000)
+      try {
+        const response = await fetch(listUrl, { signal: controller.signal, cache: "no-store" })
+        if (!response.ok) throw new Error("无法读取岗位记录")
+        const data: PagedResult = await response.json()
+        if (!Array.isArray(data.items)) throw new Error("岗位数据格式有误")
+        if (active) {
+          setList({ ...data, url: listUrl, syncedAt: Date.now() })
+          setErrorUrl(null)
+          if (data.page !== page) {
+            setPage(data.page)
+            setInputPage(String(data.page))
+          }
+        }
+      } catch {
+        if (active) setErrorUrl(listUrl)
+      } finally {
+        window.clearTimeout(timeout)
+        request = null
+        if (queued) {
+          queued = false
+          scheduleRefresh()
+        }
+      }
+    }
+
+    refreshList.current = scheduleRefresh
+    scheduleRefresh()
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+      request?.abort()
+    }
+  }, [listUrl, page])
+
+  useEffect(() => { refreshList.current() }, [progressKey, progressConnection])
+
+  useEffect(() => {
+    const request = new AbortController()
+    async function loadStats() {
+      setLoadingStats(true)
+      try {
+        const response = await fetch(statsUrl, { signal: request.signal, cache: "no-store" })
+        if (!response.ok) throw new Error("无法读取投递统计")
+        const data: StatsResponse = await response.json()
+        if (!request.signal.aborted) setStats(data)
+      } catch (error) {
+        if (!request.signal.aborted) console.error("fetch stats failed", error)
+      } finally {
+        if (!request.signal.aborted) setLoadingStats(false)
+      }
+    }
+    queueMicrotask(() => { if (!request.signal.aborted) void loadStats() })
+    return () => request.abort()
+  }, [statsUrl, statsRefresh])
+
+  const refreshData = () => {
+    refreshList.current()
+    setStatsRefresh(value => value + 1)
   }
 
   const exportCSV = async () => {
+    setExporting(true)
+    setExportError(false)
     try {
-      setExporting(true)
-      // 组装当前筛选条件
-      const baseParams = new URLSearchParams({ accountId: String(accountId) })
-      if (statuses.length) baseParams.set("statuses", statuses.join(","))
-      if (location) baseParams.set("location", location)
-      if (experience) baseParams.set("experience", experience)
-      if (degree) baseParams.set("degree", degree)
-      if (minK) baseParams.set("minK", String(Number(minK)))
-      if (maxK) baseParams.set("maxK", String(Number(maxK)))
-      if (keyword) baseParams.set("keyword", keyword)
-      if (filterHeadhunter) baseParams.set("filterHeadhunter", "true")
-
-      // 分页抓取，直到获取全部数据
-      const pageSize = 1000
-      let currentPage = 1
-      let all: BossJob[] = []
-      let totalCount = 0
-
-      while (true) {
-        const params = new URLSearchParams(baseParams)
-        params.set("page", String(currentPage))
-        params.set("size", String(pageSize))
-        const res = await fetch(`${API_BASE}/api/boss/list?${params.toString()}`)
-        const data: PagedResult = await res.json()
-        let chunk = data.items || []
-        // 导出也做兜底过滤，确保CSV不含猎头岗位
-        if (filterHeadhunter) {
-          chunk = chunk.filter(it => {
-            const hp = (it.hrPosition || "").toLowerCase()
-            return !(hp.includes("猎头") || hp.includes("獵頭"))
-          })
-        }
-        if (currentPage === 1) totalCount = data.total || chunk.length
-        all = all.concat(chunk)
-        if (all.length >= totalCount || chunk.length === 0) break
-        currentPage += 1
+      const response = await fetch(bossUrl("/api/boss/jobs.csv?" + filterQuery, accountId), { cache: "no-store" })
+      if (!response.ok || !response.headers.get("Content-Type")?.startsWith("text/csv")) {
+        throw new Error("无法导出岗位记录")
       }
-
-      const header = [
-        "公司名称",
-        "岗位名称",
-        "薪资",
-        "工作地点",
-        "经验",
-        "学历",
-        "HR",
-        "投递状态",
-        "链接",
-        "创建时间",
-      ]
-      const rows = all.map((it) => [
-        it.companyName || "",
-        it.jobName || "",
-        it.salary || "",
-        it.location || "",
-        it.experience || "",
-        it.degree || "",
-        it.hrName || "",
-        it.deliveryStatus || "",
-        it.jobUrl || "",
-        it.createdAt || "",
-      ])
-      const csv = [header, ...rows]
-        .map((r) => r.map((v) => (String(v).includes(",") ? `"${String(v).replace(/"/g, '""')}"` : String(v))).join(","))
-        .join("\n")
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = `boss_jobs_${new Date().toISOString().slice(0, 10)}.csv`
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch (e) {
-      console.error("export CSV failed", e)
-      alert("导出失败，请稍后重试")
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement("a")
+      link.href = url
+      link.download = "boss_jobs_" + accountId + "_" + new Date().toISOString().slice(0, 10) + ".csv"
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch {
+      setExportError(true)
     } finally {
       setExporting(false)
     }
-  }
-
-  // 彩色标签样式（用于状态类字段）
-  const badgeClass = (kind: "delivery" | "hr" | "recruitment", value?: string) => {
-    const base = "px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap"
-    const v = (value || "").trim()
-    if (kind === "delivery") {
-      if (v.includes("已投递")) return `${base} bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300`
-      if (v.includes("已过滤")) return `${base} bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300`
-      if (v.includes("失败")) return `${base} bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300`
-      return `${base} bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300`
-    }
-    if (kind === "hr") {
-      if (/刚|在线|今日/.test(v)) return `${base} bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300`
-      if (/小时|近/.test(v)) return `${base} bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300`
-      if (/天|周|月|很久/.test(v)) return `${base} bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300`
-      return `${base} bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300`
-    }
-    // recruitment
-    if (/暂停|关闭|下线|结束/.test(v)) return `${base} bg-gray-200 text-gray-800 dark:bg-gray-700/60 dark:text-gray-200`
-    if (/急/.test(v)) return `${base} bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300`
-    if (/招|招聘|中/.test(v)) return `${base} bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300`
-    return `${base} bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-200`
   }
 
   const kpiCards = useMemo(() => {
@@ -491,11 +383,11 @@ function AnalysisContent({ showHeader = false, accountId = 1 }: { showHeader?: b
   }, [stats])
 
   return (
-    <div className="space-y-8">
+    <div className="min-w-0 space-y-8">
       {showHeader && (
         <PageHeader
           title="Boss 投递分析"
-          subtitle="基于 boss_data 表的统计图与列表分析"
+          subtitle="查看当前账号的投递统计与岗位记录"
           icon={<BiBarChart size={28} />}
         />
       )}
@@ -521,7 +413,7 @@ function AnalysisContent({ showHeader = false, accountId = 1 }: { showHeader?: b
               <CardDescription>按状态、地区、经验、学历与薪资区间过滤列表</CardDescription>
             </div>
             <div className="flex flex-wrap gap-3 rounded-full px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
-              {statusOptions.map((s) => (
+              {STATUS_OPTIONS.map((s) => (
                 <label
                   key={s}
                   className={`group inline-flex items-center gap-2 text-sm rounded-full px-3 py-1.5 transition-all border backdrop-blur-sm ${
@@ -555,7 +447,7 @@ function AnalysisContent({ showHeader = false, accountId = 1 }: { showHeader?: b
                 <input
                   type="checkbox"
                   checked={filterHeadhunter}
-                  onChange={(e) => setFilterHeadhunter(e.target.checked)}
+                  onChange={(e) => { setFilterHeadhunter(e.target.checked); goToPage(1) }}
                   className="sr-only peer"
                 />
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded-md border border-white/30 bg-white/10 shadow-inner transition-all peer-checked:bg-teal-400/60 peer-checked:border-teal-300/80"></span>
@@ -592,22 +484,53 @@ function AnalysisContent({ showHeader = false, accountId = 1 }: { showHeader?: b
             </div>
           </div>
 
-          <div className="mt-4 flex gap-3">
-            <Button
-              onClick={async () => {
-                await loadList(1, size)
-                await loadStats()
-              }}
-              disabled={loadingList}
-            >
-              <BiBarChart className="mr-2" /> 应用筛选
+          <Button type="button" className="mt-4" onClick={applyFilters}>
+            <BiBarChart /> 应用筛选
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="min-w-0 overflow-hidden">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0 pb-4">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2 text-base"><BiBriefcase className="text-primary" />岗位数据</CardTitle>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden="true" className={"h-1.5 w-1.5 rounded-full " + (progressConnection === "live" ? "bg-emerald-600" : "bg-amber-500")} />
+                {progressConnection === "live" ? "实时同步" : progressConnection === "reconnecting" ? "进度连接重试中" : "正在连接进度"}
+              </span>
+              {currentList && <span className="tabular-nums">更新于 {new Date(currentList.syncedAt).toLocaleTimeString("zh-CN", { hour12: false })}</span>}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={refreshData}><BiRefresh />刷新数据</Button>
+            <Button type="button" size="sm" onClick={exportCSV} disabled={exporting}>
+              <BiDownload />{exporting ? "正在导出…" : "导出 CSV"}
             </Button>
-            <Button variant="success" onClick={exportCSV} disabled={exporting}>
-              <BiDownload className="mr-2" /> {exporting ? "导出中..." : "导出CSV"}
-            </Button>
-            <Button variant="outline" onClick={onReload} disabled={reloading}>
-              <BiRefresh className="mr-2" /> 刷新数据
-            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {listError && <p role="alert" className="mb-3 text-sm text-destructive">岗位数据同步失败，请稍后重试。</p>}
+          {exportError && <p role="alert" className="mb-3 text-sm text-destructive">CSV 导出失败，请稍后重试。</p>}
+          <BossJobHistoryTable items={currentList?.items ?? []} loading={!currentList} error={listError} scrollKey={listUrl} />
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+            <p className="text-muted-foreground tabular-nums">{currentList ? "共 " + total.toLocaleString("zh-CN") + " 条岗位" : "—"}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Label htmlFor="boss-history-size" className="text-muted-foreground">每页</Label>
+              <Select id="boss-history-size" value={size} className="h-8 w-[5.25rem]"
+                onChange={event => { setSize(Number(event.target.value)); goToPage(1) }}
+              >
+                {[20, 50, 100, 200].map(count => <option key={count} value={count}>{count} 条</option>)}
+              </Select>
+              <Button type="button" size="sm" variant="outline" onClick={() => goToPage(page - 1)} disabled={!currentList || page <= 1}>上一页</Button>
+              <Label htmlFor="boss-history-page" className="sr-only">页码</Label>
+              <Input id="boss-history-page" type="number" min={1} max={pageCount} value={inputPage} className="h-8 w-[4rem]"
+                onChange={event => setInputPage(event.target.value)}
+                onKeyDown={event => { if (event.key === "Enter") goToPage(Math.trunc(Number(inputPage)) || 1) }}
+              />
+              <span className="tabular-nums text-muted-foreground">/ {pageCount} 页</span>
+              <Button type="button" size="sm" variant="outline" onClick={() => goToPage(page + 1)} disabled={!currentList || page >= pageCount}>下一页</Button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -710,196 +633,8 @@ function AnalysisContent({ showHeader = false, accountId = 1 }: { showHeader?: b
         </Card>
       </div>
 
-      {/* 列表 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><BiBriefcase /> 岗位数据</CardTitle>
-          <CardDescription>点击“岗位链接”在新标签页打开 Boss 原网页；点击岗位名称或“本地详情”查看已保存的信息。</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto rounded-xl border border-stroke/30 dark:border-strokedark/30 shadow-lg">
-            <table className="w-full table-fixed min-w-[1200px] bg-white dark:bg-blacksection">
-              <thead>
-                <tr className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-b-2 border-blue-200 dark:border-blue-800">
-                  <th className="w-40 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司名称</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">岗位名称</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">薪资</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">地点</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">经验</th>
-                  <th className="w-20 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">学历</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR</th>
-                  <th className="w-32 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR职位</th>
-                  <th className="w-32 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR活跃</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">投递状态</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">招聘状态</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">岗位链接</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司地址</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">行业</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司规模</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">融资阶段</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司介绍</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">岗位描述</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200">创建时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.length === 0 ? (
-                  <tr>
-                    <td colSpan={19} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
-                      <div className="flex flex-col items-center gap-3">
-                        <BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" />
-                        <p className="text-sm">暂无数据</p>
-                      </div>
-                    </td>
-                  </tr>
-                ) : (
-                  items.map((it, idx) => (
-                    <tr
-                      key={it.id}
-                      className={`group transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0 ${
-                        idx % 2 === 0
-                          ? 'bg-white dark:bg-blacksection hover:bg-blue-50/50 dark:hover:bg-blue-950/20'
-                          : 'bg-gray-50/50 dark:bg-gray-900/20 hover:bg-blue-50/50 dark:hover:bg-blue-950/20'
-                      }`}
-                    >
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyName || '-'} onClick={() => openTextDialog("公司名称", it.companyName)}>{it.companyName || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <button type="button" className="block w-full truncate text-left hover:text-primary transition-colors" title={it.jobName || '-'} aria-label={`查看岗位详情：${it.jobName || '未命名岗位'}`} onClick={() => setSelectedRecord({ ...it })}>{it.jobName || '-'}</button>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.salary || '-'} onClick={() => openTextDialog("薪资", it.salary)}>{it.salary || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.location || '-'} onClick={() => openTextDialog("地点", it.location)}>{it.location || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.experience || '-'} onClick={() => openTextDialog("经验", it.experience)}>{it.experience || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.degree || '-'} onClick={() => openTextDialog("学历", it.degree)}>{it.degree || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.hrName || '-'} onClick={() => openTextDialog("HR", it.hrName)}>{it.hrName || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.hrPosition || '-'} onClick={() => openTextDialog("HR职位", it.hrPosition)}>{it.hrPosition || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <button className={badgeClass("hr", it.hrActiveStatus)} title={it.hrActiveStatus} onClick={() => openTextDialog("HR活跃", it.hrActiveStatus)}>{it.hrActiveStatus || "-"}</button>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <button className={badgeClass("delivery", it.deliveryStatus)} title={it.deliveryStatus} onClick={() => openTextDialog("投递状态", it.deliveryStatus)}>{it.deliveryStatus || "-"}</button>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <button className={badgeClass("recruitment", it.recruitmentStatus)} title={it.recruitmentStatus} onClick={() => openTextDialog("招聘状态", it.recruitmentStatus)}>{it.recruitmentStatus || "-"}</button>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="flex flex-col items-start gap-1.5">
-                          <BossJobLink url={it.jobUrl} title={it.jobName} />
-                          <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs" aria-label={`查看已保存岗位：${it.jobName || '未命名岗位'}`} onClick={() => setSelectedRecord({ ...it })}>本地详情</Button>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyAddress || '-'} onClick={() => openTextDialog("公司地址", it.companyAddress)}>{it.companyAddress || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.industry || '-'} onClick={() => openTextDialog("行业", it.industry)}>{it.industry || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyScale || '-'} onClick={() => openTextDialog("公司规模", it.companyScale)}>{it.companyScale || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.financingStage || '-'} onClick={() => openTextDialog("融资阶段", it.financingStage)}>{it.financingStage || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.introduce || '-'} onClick={() => openTextDialog("公司介绍", it.introduce)}>{it.introduce || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.jobDescription || '-'} onClick={() => openTextDialog("岗位描述", it.jobDescription)}>{it.jobDescription || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={formatDateOnly(it.createdAt) || '-'} onClick={() => openTextDialog("创建时间", formatDateOnly(it.createdAt))}>{formatDateOnly(it.createdAt) || '-'}</div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-4 flex items-center gap-3">
-            <Button variant="outline" onClick={() => loadList(Math.max(1, page - 1), size)} disabled={loadingList || page <= 1}>上一页</Button>
-            <div className="text-sm">第 {page} 页 / 共 {Math.max(1, Math.ceil(total / size))} 页</div>
-            <Button variant="outline" onClick={() => loadList(page + 1, size)} disabled={loadingList || page >= Math.ceil(total / size)}>下一页</Button>
-            {/* 自定义页码与每页条数 */}
-            <div className="flex items-center gap-2 ml-4">
-              <Label className="text-sm">页码</Label>
-              <Input
-                type="number"
-                value={inputPage}
-                onChange={(e) => setInputPage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    const toPage = Math.max(1, Number(inputPage) || 1)
-                    loadList(toPage, size)
-                  }
-                }}
-                className="h-8 w-20"
-              />
-              <Label className="text-sm">每页</Label>
-              <Select
-                value={String(inputSize)}
-                onChange={(e) => {
-                  const v = Number(e.target.value)
-                  setInputSize(v)
-                  loadList(1, Math.max(1, v))
-                }}
-                className="h-8 w-28"
-              >
-                <option value="20">20</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
-                <option value="200">200</option>
-              </Select>
-              <span className="text-sm text-muted-foreground">条</span>
-            </div>
-            <div className="ml-auto text-sm text-muted-foreground">共 {total} 条</div>
-          </div>
-      </CardContent>
-      </Card>
-
-      {selectedRecord && <BossJobRecordDialog job={selectedRecord} onClose={() => setSelectedRecord(null)} />}
-
-      {/* 查看全文弹框 */}
-      {showTextDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" role="dialog" aria-modal="true">
-          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-[92%] max-w-3xl border border-gray-200 dark:border-neutral-800 animate-in fade-in zoom-in-95">
-            <Card className="border-0">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg flex items-center gap-2">{textDialogTitle}</CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <textarea
-                  ref={textAreaRef}
-                  readOnly
-                  value={textDialogContent || ''}
-                  className="w-full h-[50vh] text-sm leading-6 rounded-md border p-2 bg-muted/30 dark:bg-neutral-800"
-                />
-                <div className="flex justify-end gap-2 mt-4">
-                  <Button variant="outline" onClick={selectDialogText} className="rounded-full px-4">全选</Button>
-                  <Button variant="success" onClick={copyDialogText} className="rounded-full px-4">复制</Button>
-                  <Button onClick={() => setShowTextDialog(false)} className="rounded-full px-4">关闭</Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-// 账号/队列和投递进度的轮询不应触发分析页更新，切换账号仍会正常加载。
 export default memo(AnalysisContent)

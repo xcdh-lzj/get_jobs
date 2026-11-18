@@ -85,7 +85,7 @@ public final class BossCandidateCollector implements AutoCloseable {
         return new BossReviewJob(id,row.optString("jobName",""),row.optString("brandName",""),row.optString("cityName",""),row.optString("salaryDesc",""),
                 row.optString("jobExperience",""),row.optString("jobDegree",""),row.optString("bossTitle",""),BossHrActivityReader.fromJson(row),
                 // 列表中的描述可能只是摘要；候选必须从详情页补齐 JD 后再审核。
-                "",url,keyword);
+                "",url,keyword,row.optString("brandScaleName",""));
     }
     public static String idFromUrl(String value) {
         try { String path=URI.create(value).getPath();String file=path.substring(path.lastIndexOf('/')+1);return file.endsWith(".html")?file.substring(0,file.length()-5):file; }

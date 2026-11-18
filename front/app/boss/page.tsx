@@ -17,6 +17,7 @@ import type { ReactNode } from 'react'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import { API_BASE } from '@/lib/api'
 import { useBossProgress } from '@/lib/use-boss-progress'
+import { bossHistoryProgressKey } from '@/lib/boss-progress'
 import DeliveryProgress from './DeliveryProgress'
 import BossReviewPanel from './BossReviewPanel'
 import BossCityPlan from './BossCityPlan'
@@ -1066,7 +1067,9 @@ function BossAccountPage({ accountId, queue, accountName, management }: { accoun
 
         
 </fieldset>{blacklistError && <p role="alert" className="mt-3 text-sm text-red-600">{blacklistError}</p>}</TabsContent>
-      <TabsContent value="analytics" className="workspace-panel"><AnalysisContent accountId={accountId} /></TabsContent>
+      <TabsContent value="analytics" className="workspace-panel">
+        <AnalysisContent accountId={accountId} progressKey={bossHistoryProgressKey(taskStatus?.progress)} progressConnection={progressConnection} />
+      </TabsContent>
       <TabsContent value="accounts" forceMount className="workspace-panel"><div className="section-heading"><div><h2>账号与队列</h2><p>独立登录、独立配置。按设定顺序执行，A 完成后自动切换到 B。</p></div><Button variant="outline" disabled={isBusy || saving || !!deliveryCommand} onClick={() => setShowLogoutDialog(true)}><BiLogOut />退出当前账号登录</Button></div>{management}</TabsContent>
     </Tabs>
       {/* 图片简历大图预览 */}
