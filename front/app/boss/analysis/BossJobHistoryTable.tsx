@@ -54,7 +54,7 @@ export default function BossJobHistoryTable({ items, loading, error, scrollKey, 
       role="region"
       aria-label="岗位数据表格，可横向滚动"
       tabIndex={0}
-      className="relative max-h-[34rem] min-w-0 max-w-full overflow-auto rounded-xl border focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+      className="relative max-h-[40rem] min-w-0 max-w-full overflow-auto rounded-xl border focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
     >
       <table className="w-full min-w-[1530px] table-fixed border-separate border-spacing-0 text-left text-[13px] leading-5 [&_td]:border-b [&_td]:border-border/50 [&_td]:px-3 [&_td]:py-3 [&_td]:align-top [&_td]:[overflow-wrap:anywhere] [&_tr:last-child_td]:border-b-0">
         <caption className="sr-only">Boss 岗位投递记录</caption>

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
-import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
+import { BiRefresh, BiReset, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
 
 import BossJobHistoryTable from "./BossJobHistoryTable"
 import { bossUrl } from "@/lib/boss-accounts"
@@ -272,6 +272,21 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     goToPage(1)
   }
 
+  const resetFilters = () => {
+    setStatuses([])
+    setLocation("")
+    setExperience("")
+    setDegree("")
+    setMinK("")
+    setMaxK("")
+    setKeyword("")
+    setDeliveredFrom("")
+    setDeliveredTo("")
+    setFilterHeadhunter(false)
+    setAppliedFilter("")
+    goToPage(1)
+  }
+
   useEffect(() => {
     let active = true
     let timer: number | undefined
@@ -507,9 +522,14 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
                 aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-delivery-date-error" : undefined}
               />
             </div>
-            <Button type="button" onClick={applyFilters} disabled={invalidDateRange}>
-              <BiBarChart /> 应用筛选
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" onClick={applyFilters} disabled={invalidDateRange}>
+                <BiBarChart /> 应用筛选
+              </Button>
+              <Button type="button" variant="outline" onClick={resetFilters}>
+                <BiReset /> 重置筛选
+              </Button>
+            </div>
           </div>
           {invalidDateRange && <p id="boss-delivery-date-error" role="alert" className="mt-2 text-sm text-destructive">
             投递起始日期须早于或等于结束日期。
@@ -563,6 +583,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
               >
                 {[20, 50, 100, 200].map(count => <option key={count} value={count}>{count} 条</option>)}
               </Select>
+              <Button type="button" size="sm" variant="outline" onClick={() => goToPage(1)} disabled={!currentList || page <= 1}>首页</Button>
               <Button type="button" size="sm" variant="outline" onClick={() => goToPage(page - 1)} disabled={!currentList || page <= 1}>上一页</Button>
               <Label htmlFor="boss-history-page" className="sr-only">页码</Label>
               <Input id="boss-history-page" type="number" min={1} max={pageCount} value={inputPage} className="h-8 w-[4rem]"
@@ -571,6 +592,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
               />
               <span className="tabular-nums text-muted-foreground">/ {pageCount} 页</span>
               <Button type="button" size="sm" variant="outline" onClick={() => goToPage(page + 1)} disabled={!currentList || page >= pageCount}>下一页</Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => goToPage(pageCount)} disabled={!currentList || page >= pageCount}>末页</Button>
             </div>
           </div>
         </CardContent>
