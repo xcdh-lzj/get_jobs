@@ -11,7 +11,7 @@ export interface BossHistoryJob {
   hrActiveStatus?: string
   deliveryStatus?: string
   deliveryReason?: string
-  deliveredAt?: string
+  processedAt?: string
   jobUrl?: string
   recruitmentStatus?: string
   companyAddress?: string
@@ -25,15 +25,15 @@ export interface BossHistoryJob {
 
 export const BOSS_HISTORY_SORT_OPTIONS = [
   { value: "RECORDED_DESC", label: "最近收录" },
-  { value: "DELIVERED_DESC", label: "投递时间 · 最新优先" },
-  { value: "DELIVERED_ASC", label: "投递时间 · 最早优先" },
+  { value: "PROCESSED_DESC", label: "处理时间 · 最新优先" },
+  { value: "PROCESSED_ASC", label: "处理时间 · 最早优先" },
   { value: "SALARY_DESC", label: "月薪 · 从高到低" },
   { value: "SALARY_ASC", label: "月薪 · 从低到高" },
 ] as const
 
 export type BossHistorySort = (typeof BOSS_HISTORY_SORT_OPTIONS)[number]["value"]
 
-export function formatBossDeliveryTime(value?: string): string {
+export function formatBossProcessingTime(value?: string): string {
   return value?.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:$|[.Z+-])/)?.slice(1, 3).join(' ') ?? ''
 }
 

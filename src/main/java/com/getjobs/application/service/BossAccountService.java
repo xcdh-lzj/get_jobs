@@ -94,6 +94,19 @@ public class BossAccountService implements org.springframework.boot.CommandLineR
         if (!columns.contains("delivered_at")) {
             statement.execute("ALTER TABLE boss_data ADD COLUMN delivered_at TEXT");
         }
+        if (!columns.contains("processed_at")) {
+            statement.execute("ALTER TABLE boss_data ADD COLUMN processed_at TEXT");
+        }
+        // 已补录的发送完成时间优先，其余历史记录沿用最后一次保存时间。
+        statement.executeUpdate("""
+                UPDATE boss_data
+                SET processed_at = COALESCE(
+                    strftime('%Y-%m-%dT%H:%M:%S', substr(delivered_at, 1, 19)),
+                    strftime('%Y-%m-%dT%H:%M:%S', substr(updated_at, 1, 19)),
+                    strftime('%Y-%m-%dT%H:%M:%S', substr(created_at, 1, 19))
+                )
+                WHERE processed_at IS NULL
+                """);
         if (columns.contains("delivery_reason")) return;
         statement.execute("ALTER TABLE boss_data ADD COLUMN delivery_reason TEXT");
         try (var rows = statement.executeQuery("""

@@ -727,6 +727,7 @@ public class BossService {
         entity.setAccountId(BossAccountContext.id());
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
+        entity.setProcessedAt(now.truncatedTo(ChronoUnit.SECONDS));
         bossJobDataMapper.insert(entity);
     }
 
@@ -748,13 +749,15 @@ public class BossService {
         if (!job.activeStatus().isBlank()) entity.setHrActiveStatus(job.activeStatus());
         entity.setJobUrl(job.detailUrl());
         if (!job.description().isBlank()) entity.setJobDescription(job.description());
+        LocalDateTime now = LocalDateTime.now();
         if (existing == null || !"已投递".equals(existing.getDeliveryStatus()) || deliveredAt != null) {
             entity.setDeliveryStatus(status);
             entity.setDeliveryReason(reason);
+            entity.setProcessedAt(now.truncatedTo(ChronoUnit.SECONDS));
             if (deliveredAt != null) entity.setDeliveredAt(deliveredAt.truncatedTo(ChronoUnit.SECONDS));
         }
         if (existing == null) insertBossJob(entity);
-        else { entity.setId(existing.getId()); entity.setUpdatedAt(LocalDateTime.now()); bossJobDataMapper.updateById(entity); }
+        else { entity.setId(existing.getId()); entity.setUpdatedAt(now); bossJobDataMapper.updateById(entity); }
     }
 
     /**
@@ -767,7 +770,9 @@ public class BossService {
         update.setDeliveryStatus(status);
         update.setDeliveryReason(reason);
         if (deliveredAt != null) update.setDeliveredAt(deliveredAt.truncatedTo(ChronoUnit.SECONDS));
-        update.setUpdatedAt(LocalDateTime.now());
+        LocalDateTime now = LocalDateTime.now();
+        update.setUpdatedAt(now);
+        update.setProcessedAt(now.truncatedTo(ChronoUnit.SECONDS));
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("account_id", BossAccountContext.id());
@@ -870,8 +875,17 @@ public class BossService {
             List<String> statuses, String location, String experience, String degree,
             Double minK, Double maxK, String keyword, Boolean filterHeadhunter,
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate deliveredFrom,
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate deliveredTo
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate deliveredTo,
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate processedFrom,
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate processedTo
     ) {
+        public HistoryFilters(List<String> statuses, String location, String experience, String degree,
+                              Double minK, Double maxK, String keyword, Boolean filterHeadhunter,
+                              LocalDate deliveredFrom, LocalDate deliveredTo) {
+            this(statuses, location, experience, degree, minK, maxK, keyword, filterHeadhunter,
+                    deliveredFrom, deliveredTo, null, null);
+        }
+
         public HistoryFilters {
             statuses = statuses == null ? List.of() : statuses.stream()
                     .filter(Objects::nonNull).map(String::trim).filter(value -> !value.isEmpty()).toList();
@@ -883,7 +897,7 @@ public class BossService {
     }
 
     public enum HistorySort {
-        RECORDED_DESC, DELIVERED_ASC, DELIVERED_DESC, SALARY_ASC, SALARY_DESC;
+        RECORDED_DESC, DELIVERED_ASC, DELIVERED_DESC, PROCESSED_ASC, PROCESSED_DESC, SALARY_ASC, SALARY_DESC;
 
         private boolean bySalary() {
             return this == SALARY_ASC || this == SALARY_DESC;
@@ -1096,6 +1110,12 @@ public class BossService {
         if (filters.deliveredTo() != null) {
             wrapper.le("date(delivered_at)", filters.deliveredTo().toString());
         }
+        if (filters.processedFrom() != null) {
+            wrapper.ge("date(processed_at)", filters.processedFrom().toString());
+        }
+        if (filters.processedTo() != null) {
+            wrapper.le("date(processed_at)", filters.processedTo().toString());
+        }
 
         String keyword = filters.keyword();
         if (StringUtils.isNotBlank(keyword)) {
@@ -1114,6 +1134,10 @@ public class BossService {
     private QueryWrapper<BossJobDataEntity> orderJobHistory(QueryWrapper<BossJobDataEntity> wrapper, HistorySort sort) {
         if (sort == HistorySort.DELIVERED_ASC || sort == HistorySort.DELIVERED_DESC) {
             wrapper.orderByAsc("delivered_at IS NULL").orderBy(true, sort == HistorySort.DELIVERED_ASC, "delivered_at");
+        }
+        if (sort == HistorySort.PROCESSED_ASC || sort == HistorySort.PROCESSED_DESC) {
+            wrapper.orderByAsc("processed_at IS NULL")
+                    .orderBy(true, sort == HistorySort.PROCESSED_ASC, "datetime(processed_at)");
         }
         return wrapper.orderByDesc("created_at", "id");
     }

@@ -231,8 +231,8 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const [minK, setMinK] = useState("")
   const [maxK, setMaxK] = useState("")
   const [keyword, setKeyword] = useState("")
-  const [deliveredFrom, setDeliveredFrom] = useState("")
-  const [deliveredTo, setDeliveredTo] = useState("")
+  const [processedFrom, setProcessedFrom] = useState("")
+  const [processedTo, setProcessedTo] = useState("")
   const [sort, setSort] = useState<BossHistorySort>("RECORDED_DESC")
   const [filterHeadhunter, setFilterHeadhunter] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -253,7 +253,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const total = currentList?.total ?? 0
   const pageCount = Math.max(1, Math.ceil(total / size))
   const listError = errorUrl === listUrl
-  const invalidDateRange = !!deliveredFrom && !!deliveredTo && deliveredFrom > deliveredTo
+  const invalidDateRange = !!processedFrom && !!processedTo && processedFrom > processedTo
 
   const goToPage = (value: number) => {
     const next = Math.max(1, Math.min(value, pageCount))
@@ -265,7 +265,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     if (invalidDateRange) return
     const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
-    for (const [key, value] of Object.entries({ location, experience, degree, minK, maxK, keyword, deliveredFrom, deliveredTo })) {
+    for (const [key, value] of Object.entries({ location, experience, degree, minK, maxK, keyword, processedFrom, processedTo })) {
       if (value.trim()) params.set(key, value.trim())
     }
     setAppliedFilter(params.toString())
@@ -280,8 +280,8 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     setMinK("")
     setMaxK("")
     setKeyword("")
-    setDeliveredFrom("")
-    setDeliveredTo("")
+    setProcessedFrom("")
+    setProcessedTo("")
     setFilterHeadhunter(false)
     setAppliedFilter("")
     goToPage(1)
@@ -433,7 +433,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <CardTitle className="text-base">筛选与操作</CardTitle>
-              <CardDescription>按岗位条件与投递日期筛选记录</CardDescription>
+              <CardDescription>按岗位条件与处理日期筛选记录</CardDescription>
             </div>
             <div className="flex flex-wrap gap-3 rounded-full px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
               {STATUS_OPTIONS.map((s) => (
@@ -509,17 +509,17 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
 
           <div className="mt-4 flex flex-wrap items-end gap-3">
             <div className="w-44 space-y-1.5">
-              <Label htmlFor="boss-delivered-from">投递起始日期</Label>
-              <Input id="boss-delivered-from" type="date" value={deliveredFrom}
-                onChange={event => setDeliveredFrom(event.target.value)}
-                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-delivery-date-error" : undefined}
+              <Label htmlFor="boss-processed-from">处理起始日期</Label>
+              <Input id="boss-processed-from" type="date" value={processedFrom}
+                onChange={event => setProcessedFrom(event.target.value)}
+                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-processing-date-error" : undefined}
               />
             </div>
             <div className="w-44 space-y-1.5">
-              <Label htmlFor="boss-delivered-to">投递结束日期</Label>
-              <Input id="boss-delivered-to" type="date" value={deliveredTo}
-                onChange={event => setDeliveredTo(event.target.value)}
-                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-delivery-date-error" : undefined}
+              <Label htmlFor="boss-processed-to">处理结束日期</Label>
+              <Input id="boss-processed-to" type="date" value={processedTo}
+                onChange={event => setProcessedTo(event.target.value)}
+                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-processing-date-error" : undefined}
               />
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -531,8 +531,8 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
               </Button>
             </div>
           </div>
-          {invalidDateRange && <p id="boss-delivery-date-error" role="alert" className="mt-2 text-sm text-destructive">
-            投递起始日期须早于或等于结束日期。
+          {invalidDateRange && <p id="boss-processing-date-error" role="alert" className="mt-2 text-sm text-destructive">
+            处理起始日期须早于或等于结束日期。
           </p>}
         </CardContent>
       </Card>

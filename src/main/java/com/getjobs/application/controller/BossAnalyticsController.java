@@ -69,6 +69,11 @@ public class BossAnalyticsController {
         if (from != null && to != null && from.isAfter(to)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "投递起始日期须早于或等于结束日期");
         }
+        from = filters.processedFrom();
+        to = filters.processedTo();
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "处理起始日期须早于或等于结束日期");
+        }
     }
 
     /**

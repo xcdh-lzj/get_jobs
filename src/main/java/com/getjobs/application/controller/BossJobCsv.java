@@ -14,13 +14,13 @@ final class BossJobCsv {
     static byte[] encode(List<BossJobDataEntity> jobs) {
         var csv = new StringBuilder("\uFEFF");
         appendRow(csv, "公司名称", "公司规模", "岗位名称", "薪资", "地点", "学历", "经验",
-                "HR职位", "HR活跃", "投递状态", "投递或过滤原因", "职位描述", "岗位链接", "投递时间");
+                "HR职位", "HR活跃", "投递状态", "投递或过滤原因", "职位描述", "岗位链接", "处理时间");
         for (var job : jobs) {
-            var deliveredAt = job.getDeliveredAt();
+            var processedAt = job.getProcessedAt();
             appendRow(csv, job.getCompanyName(), job.getCompanyScale(), job.getJobName(), job.getSalary(),
                     job.getLocation(), job.getDegree(), job.getExperience(), job.getHrPosition(), job.getHrActiveStatus(),
                     job.getDeliveryStatus(), job.getDeliveryReason(), job.getJobDescription(), job.getJobUrl(),
-                    deliveredAt == null ? "" : TIME.format(deliveredAt));
+                    processedAt == null ? "" : TIME.format(processedAt));
         }
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }

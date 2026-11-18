@@ -61,6 +61,9 @@ public class BossJobDataEntity {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime deliveredAt;
 
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime processedAt;
+
     @TableField("job_description")
     private String jobDescription;
 

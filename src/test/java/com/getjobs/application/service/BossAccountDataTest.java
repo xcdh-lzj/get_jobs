@@ -214,6 +214,7 @@ class BossAccountDataTest {
         var sentFilter = new HistoryFilters(List.of("已投递"), null, null, null, null, null, null, false, null, null);
         var sent = boss.listBossJobs(sentFilter, HistorySort.RECORDED_DESC, 1, 20).items.getFirst();
         assertEquals(sentAt, sent.getDeliveredAt());
+        assertNotNull(sent.getProcessedAt());
         assertEquals("已完成招呼语发送流程", sent.getDeliveryReason());
         try (var scope=BossAccountContext.use(second)) {
             assertEquals(0,boss.getBossStats().kpi.delivered);
@@ -221,6 +222,7 @@ class BossAccountDataTest {
             var rows=boss.listBossJobs(unfilteredHistory(), HistorySort.RECORDED_DESC, 1, 20);
             assertEquals(1,rows.total); assertEquals("未投递",rows.items.getFirst().getDeliveryStatus());
             assertNull(rows.items.getFirst().getDeliveredAt());
+            assertNotNull(rows.items.getFirst().getProcessedAt());
             assertNull(rows.items.getFirst().getDeliveryReason());
             boss.ensureBossDataColumnOrder();
             assertEquals(second,rows.items.getFirst().getAccountId());
@@ -240,6 +242,7 @@ class BossAccountDataTest {
         var sentAt = LocalDateTime.of(2026, 11, 18, 15, 8, 7, 950_000_000);
         var partial=new com.getjobs.worker.boss.review.BossReviewJob("same-job","更新后的岗位名","","","","","","","","","https://www.zhipin.com/job_detail/same-job.html","","100-499人");
         boss.recordPrecisionJob(partial, "已投递", "已完成招呼语发送流程", sentAt);
+        var resultTime = session.getMapper(BossJobDataMapper.class).selectById(existing.getId()).getProcessedAt();
         boss.recordPrecisionJob(partial, "已过滤", "再次筛选命中黑名单", null);
         var saved=session.getMapper(BossJobDataMapper.class).selectById(existing.getId());
         assertEquals("更新后的岗位名",saved.getJobName());assertEquals("原公司",saved.getCompanyName());
@@ -248,10 +251,40 @@ class BossAccountDataTest {
         assertEquals("100-499人", saved.getCompanyScale());
         assertEquals("已完成招呼语发送流程", saved.getDeliveryReason());
         assertEquals(sentAt.withNano(0), saved.getDeliveredAt());
+        assertNotNull(resultTime);
+        assertEquals(resultTime, saved.getProcessedAt());
         long second=accounts.create("第二账号",null).id();
         try(var scope=BossAccountContext.use(second)) {boss.recordPrecisionJob(partial,"未投递","未配置招呼语",null);}
         assertEquals("已投递",session.getMapper(BossJobDataMapper.class).selectById(existing.getId()).getDeliveryStatus());
         assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM boss_data",Integer.class));
+    }
+
+    @Test void futureFilteredSkippedAndFailedResultsStoreTheirProcessingTime() {
+        var jobs = session.getMapper(BossJobDataMapper.class);
+        var recent = LocalDateTime.now().withNano(0);
+        for (String status : List.of("已过滤", "未投递", "投递失败")) {
+            var row = new BossJobDataEntity();
+            row.setEncryptId("legacy-fixture-" + status);
+            row.setDeliveryStatus("未投递");
+            boss.insertBossJob(row);
+            jdbc.update("UPDATE boss_data SET processed_at='2026-10-01T12:00:00' WHERE id=?", row.getId());
+            boss.updateDeliveryStatus(row.getEncryptId(), null, status, "模拟处理结果", null);
+            var saved = jobs.selectById(row.getId());
+            assertEquals(status, saved.getDeliveryStatus());
+            assertNull(saved.getDeliveredAt());
+            assertFalse(saved.getProcessedAt().isBefore(recent));
+            assertEquals(0, saved.getProcessedAt().getNano());
+
+            var reviewJob = new com.getjobs.worker.boss.review.BossReviewJob(
+                    "precision-fixture-" + row.getId(), "模拟岗位", "", "", "", "", "", "", "",
+                    "模拟职责", "https://www.zhipin.com/job_detail/precision-fixture-" + row.getId() + ".html", "");
+            boss.recordPrecisionJob(reviewJob, status, "模拟审核结果", null);
+            var precision = jobs.selectOne(new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<BossJobDataEntity>()
+                    .eq("encrypt_id", reviewJob.id()));
+            assertEquals(status, precision.getDeliveryStatus());
+            assertNull(precision.getDeliveredAt());
+            assertFalse(precision.getProcessedAt().isBefore(recent));
+        }
     }
 
     @Test void legacyJobHistoryRestoresOnlyMatchingReviewReasonsAndKeepsActualTimeUnknown() {
@@ -390,6 +423,56 @@ class BossAccountDataTest {
         var bounded = new HistoryFilters(null, null, null, null, 10.0, 18.0, null, false, null, null);
         assertEquals(List.of("同薪资新岗位", "中间薪资"), boss.exportBossJobs(bounded, HistorySort.SALARY_DESC)
                 .stream().map(BossJobDataEntity::getJobName).toList());
+    }
+
+    @Test void processingTimeMigrationAndFiltersCoverEveryOutcomeAndPreserveRecoveredSendingHistory() throws Exception {
+        jdbc.execute("ALTER TABLE boss_data DROP COLUMN processed_at");
+        jdbc.execute("""
+                INSERT INTO boss_data(account_id,job_name,delivery_status,created_at,updated_at,delivered_at) VALUES
+                    (1,'示例已投递','已投递','2026-11-18T00:00:00','2026-11-20T00:05:01','2026-11-19T00:00:00'),
+                    (1,'示例已过滤','已过滤','2026-11-18T00:00:00','2026-11-19T23:59:59.999999',NULL),
+                    (1,'示例未投递','未投递','2026-11-19T03:25',NULL,NULL),
+                    (1,'示例投递失败','投递失败','2026-11-18T00:00:00','2026-11-19T07:00:01',NULL),
+                    (1,'次日示例','未投递','2026-11-20T00:00:00',NULL,NULL),
+                    (2,'其他账号示例','未投递','2026-11-19T12:00:00',NULL,NULL)
+                """);
+        accounts.migrate();
+        jdbc.update("UPDATE boss_data SET updated_at='2026-11-20T00:00:00' WHERE job_name='示例已过滤'");
+        accounts.migrate();
+        assertEquals("2026-11-19T00:00:00", jdbc.queryForObject(
+                "SELECT delivered_at FROM boss_data WHERE job_name='示例已投递'", String.class));
+
+        var controller = new com.getjobs.application.controller.BossAnalyticsController(boss);
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        var day = new org.springframework.util.LinkedMultiValueMap<String, String>();
+        day.add("processedFrom", "2026-11-19");
+        day.add("processedTo", "2026-11-19");
+        var page = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/list")
+                        .params(day).param("sort", "PROCESSED_ASC")).andReturn().getResponse();
+        assertEquals(200, page.getStatus());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var data = mapper.readTree(page.getContentAsByteArray());
+        assertEquals(4, data.path("total").asInt());
+        var items = data.path("items");
+        assertEquals("2026-11-19 00:00:00", items.get(0).path("processedAt").asText());
+        assertEquals("未投递", items.get(1).path("deliveryStatus").asText());
+        assertEquals("投递失败", items.get(2).path("deliveryStatus").asText());
+        assertEquals("2026-11-19 23:59:59", items.get(3).path("processedAt").asText());
+        assertTrue(items.get(3).path("deliveredAt").isNull());
+
+        var stats = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/stats")
+                        .params(day)).andReturn().getResponse();
+        assertEquals(200, stats.getStatus());
+        assertEquals(4, mapper.readTree(stats.getContentAsByteArray()).path("kpi").path("total").asInt());
+
+        var export = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/jobs.csv")
+                        .params(day).param("sort", "PROCESSED_DESC")).andReturn().getResponse();
+        assertEquals(200, export.getStatus());
+        var csv = export.getContentAsString(java.nio.charset.StandardCharsets.UTF_8).lines().toList();
+        assertEquals(5, csv.size());
+        assertTrue(csv.getFirst().endsWith("\"处理时间\""));
+        assertTrue(csv.get(1).contains("示例已过滤") && csv.get(1).endsWith("\"2026-11-19 23:59:59\""));
+        assertTrue(csv.getLast().contains("示例已投递") && csv.getLast().endsWith("\"2026-11-19 00:00:00\""));
     }
 
     private static HistoryFilters unfilteredHistory() {

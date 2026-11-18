@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { ArrowDown, ArrowUp, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { formatBossDeliveryTime, type BossHistoryJob, type BossHistorySort } from "@/lib/boss-history"
+import { formatBossProcessingTime, type BossHistoryJob, type BossHistorySort } from "@/lib/boss-history"
 import BossJobLink from "./BossJobLink"
 import BossJobRecordDialog from "./BossJobRecordDialog"
 
@@ -21,7 +21,7 @@ const columns = [
   ["投递或过滤原因", 212],
   ["职位描述", 94],
   ["岗位链接", 86],
-  ["投递时间", 120],
+  ["处理时间", 120],
 ] as const
 
 const statusColors: Record<string, string> = {
@@ -45,7 +45,7 @@ export default function BossJobHistoryTable({ items, loading, error, scrollKey, 
   const [selected, setSelected] = useState<BossHistoryJob | null>(null)
   const container = useRef<HTMLDivElement>(null)
   useEffect(() => { if (container.current) container.current.scrollTop = 0 }, [scrollKey])
-  const sortedColumn = sort.startsWith("DELIVERED_") ? "投递时间" : sort.startsWith("SALARY_") ? "薪资" : null
+  const sortedColumn = sort.startsWith("PROCESSED_") ? "处理时间" : sort.startsWith("SALARY_") ? "薪资" : null
   const ascending = sort.endsWith("_ASC")
   const SortArrow = ascending ? ArrowUp : ArrowDown
   return <>
@@ -77,7 +77,7 @@ export default function BossJobHistoryTable({ items, loading, error, scrollKey, 
               {error ? "暂时无法读取岗位数据" : loading ? "正在加载岗位数据…" : "当前筛选条件下暂无岗位"}
             </td></tr>
           ) : items.map(job => {
-            const time = formatBossDeliveryTime(job.deliveredAt)
+            const time = formatBossProcessingTime(job.processedAt)
             const status = job.deliveryStatus?.trim()
             const recent = /^(在线|当前在线|刚刚?活跃|今[日天]活跃)$/.test(job.hrActiveStatus?.trim() ?? "")
             return (

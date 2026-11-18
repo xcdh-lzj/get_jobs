@@ -40,7 +40,7 @@ CREATE TABLE boss_config (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE "boss_data" (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypt_id TEXT, encrypt_user_id TEXT, company_name TEXT, job_name TEXT, salary TEXT, location TEXT, experience TEXT, degree TEXT, hr_name TEXT, hr_position TEXT, hr_active_status TEXT, delivery_status TEXT, job_description TEXT, job_url TEXT, recruitment_status TEXT, company_address TEXT, industry TEXT, introduce TEXT, financing_stage TEXT, company_scale TEXT, created_at TEXT, updated_at TEXT, delivery_reason TEXT, delivered_at TEXT);
+CREATE TABLE "boss_data" (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypt_id TEXT, encrypt_user_id TEXT, company_name TEXT, job_name TEXT, salary TEXT, location TEXT, experience TEXT, degree TEXT, hr_name TEXT, hr_position TEXT, hr_active_status TEXT, delivery_status TEXT, job_description TEXT, job_url TEXT, recruitment_status TEXT, company_address TEXT, industry TEXT, introduce TEXT, financing_stage TEXT, company_scale TEXT, created_at TEXT, updated_at TEXT, delivery_reason TEXT, delivered_at TEXT, processed_at TEXT);
 
 CREATE TABLE boss_option (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
