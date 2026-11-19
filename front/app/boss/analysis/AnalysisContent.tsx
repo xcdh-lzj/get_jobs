@@ -211,6 +211,7 @@ const ChartCanvas = memo(function ChartCanvas({
 }, sameAnalysisChart)
 
 const STATUS_OPTIONS = ["未投递", "已投递", "已过滤", "投递失败"]
+const DEFAULT_SORT: BossHistorySort = "PROCESSED_DESC"
 
 function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progressConnection }: {
   showHeader?: boolean
@@ -226,7 +227,8 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const [page, setPage] = useState(1)
   const [size, setSize] = useState(20)
   const [inputPage, setInputPage] = useState("1")
-  const [appliedFilter, setAppliedFilter] = useState("")
+  const [[processedFrom, processedTo], setProcessingDates] = useState(() => bossProcessingDateRange("today"))
+  const [appliedFilter, setAppliedFilter] = useState(() => new URLSearchParams({ processedFrom, processedTo }).toString())
   const [statuses, setStatuses] = useState<string[]>([])
   const [location, setLocation] = useState("")
   const [experience, setExperience] = useState("")
@@ -234,10 +236,8 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const [minK, setMinK] = useState("")
   const [maxK, setMaxK] = useState("")
   const [keyword, setKeyword] = useState("")
-  const [processedFrom, setProcessedFrom] = useState("")
-  const [processedTo, setProcessedTo] = useState("")
-  const [datePreset, setDatePreset] = useState<BossProcessingDatePreset | null>(null)
-  const [sort, setSort] = useState<BossHistorySort>("RECORDED_DESC")
+  const [datePreset, setDatePreset] = useState<BossProcessingDatePreset | null>("today")
+  const [sort, setSort] = useState<BossHistorySort>(DEFAULT_SORT)
   const [filterHeadhunter, setFilterHeadhunter] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState(false)
@@ -273,15 +273,17 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     for (const [key, value] of Object.entries({ location, experience, degree, minK, maxK, keyword, processedFrom, processedTo })) {
       if (value.trim()) params.set(key, value.trim())
     }
+    if (params.get("processedFrom") !== filterParams.get("processedFrom")
+        || params.get("processedTo") !== filterParams.get("processedTo")) {
+      setDatePreset(null)
+    }
     setAppliedFilter(params.toString())
-    setDatePreset(null)
     goToPage(1)
   }
 
   const applyDatePreset = (preset: BossProcessingDatePreset | null) => {
     const [from, to] = preset ? bossProcessingDateRange(preset) : ["", ""]
-    setProcessedFrom(from)
-    setProcessedTo(to)
+    setProcessingDates([from, to])
     setDatePreset(preset)
     setAppliedFilter(previous => {
       const params = new URLSearchParams(previous)
@@ -305,12 +307,10 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     setMinK("")
     setMaxK("")
     setKeyword("")
-    setProcessedFrom("")
-    setProcessedTo("")
-    setDatePreset(null)
     setFilterHeadhunter(false)
     setAppliedFilter("")
-    goToPage(1)
+    setSort(DEFAULT_SORT)
+    applyDatePreset("today")
   }
 
   useEffect(() => {
@@ -549,14 +549,14 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
             <div className="w-44 space-y-1.5">
               <Label htmlFor="boss-processed-from">处理起始日期</Label>
               <Input id="boss-processed-from" type="date" value={processedFrom}
-                onChange={event => setProcessedFrom(event.target.value)}
+                onChange={event => setProcessingDates([event.target.value, processedTo])}
                 aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-processing-date-error" : undefined}
               />
             </div>
             <div className="w-44 space-y-1.5">
               <Label htmlFor="boss-processed-to">处理结束日期</Label>
               <Input id="boss-processed-to" type="date" value={processedTo}
-                onChange={event => setProcessedTo(event.target.value)}
+                onChange={event => setProcessingDates([processedFrom, event.target.value])}
                 aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? "boss-processing-date-error" : undefined}
               />
             </div>
@@ -591,7 +591,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
             <div className="flex items-center gap-2">
               <Label htmlFor="boss-history-sort" className="text-muted-foreground">排序</Label>
               <Select id="boss-history-sort" className="h-9 w-auto" value={sort}
-                title="月薪按薪资区间中点排序"
+                title={sort.startsWith("SALARY_") ? "月薪按薪资区间中点排序" : undefined}
                 onChange={event => {
                   const option = BOSS_HISTORY_SORT_OPTIONS.find(item => item.value === event.target.value)
                   if (!option) return

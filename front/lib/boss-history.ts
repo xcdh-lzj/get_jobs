@@ -24,7 +24,6 @@ export interface BossHistoryJob {
 }
 
 export const BOSS_HISTORY_SORT_OPTIONS = [
-  { value: "RECORDED_DESC", label: "最近收录" },
   { value: "PROCESSED_DESC", label: "处理时间 · 最新优先" },
   { value: "PROCESSED_ASC", label: "处理时间 · 最早优先" },
   { value: "SALARY_DESC", label: "月薪 · 从高到低" },
