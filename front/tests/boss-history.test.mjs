@@ -59,6 +59,26 @@ test('company introductions are separated when headed, named on their own line, 
   assert.deepEqual(formatBossDescription(jd, null, null).companySections, [])
 })
 
+const joinedDuties = '岗来自BOSS直聘位职责1.负责智能体应用的迭代开发2.负责线上问题排查岗位要求1.熟悉框架版本2.1；2.有项目经验。'
+const unlabelledIntro = '示例（成都）信息技术服务有限公司，是示例集团的子公司，成立于 2023 年 11 月。\n公司提供软件技术服务。'
+
+test('saved descriptions split embedded headings and adjacent list items from a company profile', () => {
+  const parsed = formatBossDescription(joinedDuties + '\n' + unlabelledIntro, null, '成都示例信息技...')
+  assert.deepEqual(parsed.jobSections.map(section => section.heading), ['岗位职责', '岗位要求'])
+  assert.deepEqual(parsed.jobSections[0].blocks[0].items, [
+    { number: 1, text: '负责智能体应用的迭代开发' },
+    { number: 2, text: '负责线上问题排查' },
+  ])
+  assert.equal(parsed.jobSections[1].blocks[0].items[0].text, '熟悉框架版本2.1；')
+  assert.equal(parsed.jobText, joinedDuties)
+  assert.equal(parsed.companySections.length, 1)
+  assert.equal(parsed.companyText, unlabelledIntro)
+
+  const unrelated = formatBossDescription(joinedDuties + '\n' + unlabelledIntro, null, '别的公司')
+  assert.deepEqual(unrelated.companySections, [])
+  assert.equal(unrelated.jobText, joinedDuties + '\n' + unlabelledIntro)
+})
+
 test('processing date presets use inclusive dates on the browser calendar', () => {
   const date = new Date(2026, 10, 19, 0, 5)
   assert.deepEqual(bossProcessingDateRange('today', date), ['2026-11-19', '2026-11-19'])
@@ -131,15 +151,15 @@ test('record details render the role and company in separate sections', () => {
   globalThis.document = { body: {} }
   try {
     const markup = renderToStaticMarkup(React.createElement(Component, {
-      job: { id: 1, jobName: '模拟开发岗位', jobDescription: '岗位职责：1. 负责接口研发；2. 负责测试。\n公司简介：这是一家示例公司。' },
+      job: { id: 1, jobName: '模拟开发岗位', companyName: '成都示例信息技...', jobDescription: joinedDuties + '\n' + unlabelledIntro },
       onClose() {},
     }))
     const job = markup.match(/<section aria-labelledby="boss-record-jd">(.*?)<\/section>/s)[1]
     const company = markup.match(/<section aria-labelledby="boss-record-company">(.*?)<\/section>/s)[1]
     assert.match(job, /<h4[^>]+>岗位职责<\/h4>/)
-    assert.match(job, /<ol[^>]+>.*?<li value="1"[^>]*>负责接口研发；<\/li>/s)
-    assert.doesNotMatch(job, /这是一家示例公司/)
-    assert.match(company, /这是一家示例公司/)
+    assert.match(job, /<ol[^>]+>.*?<li value="1"[^>]*>负责智能体应用的迭代开发<\/li>.*?<li value="2"[^>]*>负责线上问题排查<\/li>/s)
+    assert.doesNotMatch(job, /是示例集团的子公司/)
+    assert.match(company, /是示例集团的子公司/)
     assert.match(company, /复制公司简介/)
   } finally {
     if (previous === undefined) delete globalThis.document
