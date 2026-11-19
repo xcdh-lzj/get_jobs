@@ -212,11 +212,7 @@ const ChartCanvas = memo(function ChartCanvas({
 
 const STATUS_OPTIONS = ["未投递", "已投递", "已过滤", "投递失败"]
 const DEFAULT_SORT: BossHistorySort = "PROCESSED_DESC"
-const EXPORT_FORMATS = {
-  xlsx: { label: "Excel", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
-  csv: { label: "CSV", contentType: "text/csv" },
-} as const
-type ExportFormat = keyof typeof EXPORT_FORMATS
+const XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progressConnection }: {
   showHeader?: boolean
@@ -244,8 +240,8 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const [datePreset, setDatePreset] = useState<BossProcessingDatePreset | null>("today")
   const [sort, setSort] = useState<BossHistorySort>(DEFAULT_SORT)
   const [filterHeadhunter, setFilterHeadhunter] = useState(false)
-  const [exporting, setExporting] = useState<ExportFormat | null>(null)
-  const [exportError, setExportError] = useState<ExportFormat | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState(false)
   const refreshList = useRef<() => void>(() => {})
   const filterParams = new URLSearchParams(appliedFilter)
   if (filterHeadhunter) filterParams.set("filterHeadhunter", "true")
@@ -401,26 +397,26 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     setStatsRefresh(value => value + 1)
   }
 
-  const exportJobs = async (format: ExportFormat) => {
-    setExporting(format)
-    setExportError(null)
+  const exportExcel = async () => {
+    setExporting(true)
+    setExportError(false)
     try {
-      const response = await fetch(bossUrl("/api/boss/jobs." + format + "?" + historyQuery, accountId), { cache: "no-store" })
-      if (!response.ok || !response.headers.get("Content-Type")?.startsWith(EXPORT_FORMATS[format].contentType)) {
+      const response = await fetch(bossUrl("/api/boss/jobs.xlsx?" + historyQuery, accountId), { cache: "no-store" })
+      if (!response.ok || !response.headers.get("Content-Type")?.startsWith(XLSX_CONTENT_TYPE)) {
         throw new Error("无法导出岗位记录")
       }
       const url = URL.createObjectURL(await response.blob())
       const link = document.createElement("a")
       link.href = url
-      link.download = "boss_jobs_" + accountId + "_" + bossProcessingDateRange("today")[0] + "." + format
+      link.download = "boss_jobs_" + accountId + "_" + bossProcessingDateRange("today")[0] + ".xlsx"
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch {
-      setExportError(format)
+      setExportError(true)
     } finally {
-      setExporting(null)
+      setExporting(false)
     }
   }
 
@@ -608,17 +604,14 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
               </Select>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={refreshData}><BiRefresh />刷新数据</Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => void exportJobs("csv")} disabled={exporting !== null}>
-              {exporting === "csv" ? "正在导出…" : "导出 CSV"}
-            </Button>
-            <Button type="button" size="sm" onClick={() => void exportJobs("xlsx")} disabled={exporting !== null}>
-              <BiDownload />{exporting === "xlsx" ? "正在导出…" : "导出 Excel"}
+            <Button type="button" size="sm" onClick={exportExcel} disabled={exporting}>
+              <BiDownload />{exporting ? "正在导出…" : "导出 Excel"}
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           {listError && <p role="alert" className="mb-3 text-sm text-destructive">岗位数据同步失败，请稍后重试。</p>}
-          {exportError && <p role="alert" className="mb-3 text-sm text-destructive">{EXPORT_FORMATS[exportError].label} 导出失败，请稍后重试。</p>}
+          {exportError && <p role="alert" className="mb-3 text-sm text-destructive">Excel 导出失败，请稍后重试。</p>}
           <BossJobHistoryTable items={currentList?.items ?? []} loading={!currentList} error={listError} scrollKey={listUrl} sort={sort} />
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
             <p className="text-muted-foreground tabular-nums">{currentList ? "共 " + total.toLocaleString("zh-CN") + " 条岗位" : "—"}</p>
