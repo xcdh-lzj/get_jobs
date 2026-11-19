@@ -42,7 +42,13 @@ public class BossAccountWebConfig implements WebMvcConfigurer {
                 boolean editing=(!"GET".equals(request.getMethod()) &&
                         (path.startsWith("/api/boss/config") || path.startsWith("/api/boss/accounts/") || path.endsWith("/logout") || path.endsWith("/review/settings")))
                         || path.endsWith("/reload");
-                if (editing) { locks.beginEdit(id); request.setAttribute(EDIT,true); }
+                // 整套同步由服务获取独占配置写锁，避免在这里先持有普通编辑锁。
+                boolean configSync = match.matches()
+                        && path.equals("/api/boss/accounts/" + match.group(1) + "/sync-config");
+                if (editing && !configSync) {
+                    locks.beginEdit(id);
+                    request.setAttribute(EDIT,true);
+                }
                 BossAccountContext.use(id);
                 return true;
             }

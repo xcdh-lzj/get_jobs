@@ -26,6 +26,16 @@ public class BossAccountLocks {
         try { requireEditable(id); } catch (RuntimeException e) { edits.readLock().unlock(); throw e; }
     }
     public void endEdit() { edits.readLock().unlock(); }
+    public void beginConfigSync(long target) {
+        edits.writeLock().lock();
+        try {
+            requireEditable(target);
+        } catch (RuntimeException e) {
+            edits.writeLock().unlock();
+            throw e;
+        }
+    }
+    public void endConfigSync() { edits.writeLock().unlock(); }
     public synchronized void release() { reserved.clear(); }
     public synchronized boolean busy(long id) { return reserved.contains(id); }
     public synchronized void requireEditable(long id) {

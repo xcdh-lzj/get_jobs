@@ -489,6 +489,129 @@ class BossAccountDataTest {
         boss.insertBossJob(job);
     }
 
+    @Test void completeConfigSyncCopiesAllSettingsAndKeepsAccountIdentityAndHistory() throws Exception {
+        long target = accounts.create("目标账号", null).id();
+        var images = new BossResumeImageService(directory.resolve("sync-resumes"));
+        var syncService = configSyncService(images);
+        jdbc.update("""
+                UPDATE boss_config SET wait_time=12, city_code='[上海,广州]', send_img_resume=1,
+                    repeat_chat_messages='示例复聊', salary_filter_policy='{"mode":"custom","minMonthlyK":12.5}'
+                WHERE account_id=1
+                """);
+        jdbc.update("UPDATE boss_config SET industry='[目标旧行业]',say_hi='目标旧招呼' WHERE account_id=?", target);
+        citySettings.save(new com.getjobs.worker.boss.BossCityPolicy(true, 20, 2));
+        hrSettings.save(new com.getjobs.worker.boss.BossHrActivityPolicy(5));
+        var reviews = new BossReviewStore(jdbc, new com.fasterxml.jackson.databind.ObjectMapper());
+        reviews.savePolicy(new com.getjobs.worker.boss.review.BossReviewPolicy(
+                true, "模拟研发方向", List.of("模拟开发"), List.of("模拟销售")));
+        reviews.saveEconomy(new com.getjobs.worker.boss.review.BossReviewEconomy(false, 14, 5000));
+        accounts.saveProfile(1, "来源模拟介绍", "来源模拟提示词");
+        accounts.saveProfile(target, "目标旧介绍", "目标旧提示词");
+        accounts.saveCookies(1, "source-login-fixture");
+        accounts.saveCookies(target, "target-login-fixture");
+        jdbc.update("INSERT INTO boss_blacklist(account_id,type,value) VALUES(1,'company','模拟公司'),(1,'job','模拟岗位'),(1,'recruiter','模拟 HR'),(?,'company','目标旧黑名单')", target);
+        jdbc.update("INSERT INTO boss_data(account_id,job_name,delivery_status) VALUES(1,'来源记录','已投递'),(?,'目标记录','未投递')", target);
+        Path sourceImage = saveSyncImage(images, 1, "jpg", 0xFF0020);
+        Path previousTargetImage = saveSyncImage(images, target, "png", 0x008020);
+        try (var scope = BossAccountContext.use(target)) {
+            reviews.begin("history", com.getjobs.worker.boss.review.BossReviewPolicy.defaults());
+        }
+
+        var registry = new org.springframework.web.servlet.config.annotation.InterceptorRegistry() {
+            public org.springframework.web.servlet.HandlerInterceptor[] interceptors() {
+                return getInterceptors().stream().map(org.springframework.web.servlet.HandlerInterceptor.class::cast)
+                        .toArray(org.springframework.web.servlet.HandlerInterceptor[]::new);
+            }
+        };
+        new com.getjobs.application.config.BossAccountWebConfig(accounts, locks).addInterceptors(registry);
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
+                new com.getjobs.application.controller.BossConfigSyncController(syncService))
+                .addInterceptors(registry.interceptors()).setControllerAdvice(new com.getjobs.application.controller.BossApiErrors()).build();
+        var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .post("/api/boss/accounts/" + target + "/sync-config")
+                .contentType("application/json").content("{\"sourceAccountId\":1}");
+        locks.reserve(List.of(target));
+        try { assertEquals(409, mvc.perform(request).andReturn().getResponse().getStatus()); }
+        finally { locks.release(); }
+        assertEquals("目标旧招呼", jdbc.queryForObject("SELECT say_hi FROM boss_config WHERE account_id=?", String.class, target));
+        locks.reserve(List.of(1L));
+        try { assertEquals(200, mvc.perform(request).andReturn().getResponse().getStatus()); }
+        finally { locks.release(); }
+        var sourceConfig = jdbc.queryForMap("SELECT * FROM boss_config WHERE account_id=1");
+        var targetConfig = jdbc.queryForMap("SELECT * FROM boss_config WHERE account_id=?", target);
+        for (String column : List.of("id", "account_id")) {
+            sourceConfig.remove(column);
+            targetConfig.remove(column);
+        }
+        assertEquals(sourceConfig, targetConfig);
+        var sourceBlacklist = jdbc.queryForList("SELECT type,value FROM boss_blacklist WHERE account_id=1 ORDER BY id");
+        assertEquals(sourceBlacklist, jdbc.queryForList("SELECT type,value FROM boss_blacklist WHERE account_id=? ORDER BY id", target));
+        assertEquals(accounts.profile(1), accounts.profile(target));
+        assertEquals("目标账号", accounts.require(target).name());
+        assertEquals("target-login-fixture", accounts.cookies(target));
+        assertEquals("目标记录", jdbc.queryForObject("SELECT job_name FROM boss_data WHERE account_id=?", String.class, target));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM boss_review_runs WHERE account_id=?", Integer.class, target));
+        try (var scope = BossAccountContext.use(target)) {
+            assertEquals(new com.getjobs.worker.boss.BossCityPolicy(true, 20, 2), citySettings.policy());
+            assertEquals(5, hrSettings.policy().maxDays());
+            assertEquals(List.of("模拟开发"), reviews.policy().targetRoles());
+            assertEquals(new com.getjobs.worker.boss.review.BossReviewEconomy(false, 14, 5000), reviews.economy());
+            assertArrayEquals(Files.readAllBytes(sourceImage), Files.readAllBytes(images.getCurrentImagePath().orElseThrow()));
+            assertFalse(Files.exists(previousTargetImage));
+        }
+
+        jdbc.update("DELETE FROM boss_review_economy WHERE account_id=1");
+        Files.delete(sourceImage);
+        assertEquals(200, mvc.perform(request).andReturn().getResponse().getStatus());
+        try (var scope = BossAccountContext.use(target)) {
+            assertEquals(com.getjobs.worker.boss.review.BossReviewEconomy.defaults(), reviews.economy());
+            assertTrue(images.getCurrentImagePath().isEmpty());
+        }
+    }
+
+    @Test void failedConfigSyncRollsBackBothDatabaseAndTheTargetResume() throws Exception {
+        long target = accounts.create("保留配置的账号", null).id();
+        var images = new BossResumeImageService(directory.resolve("rollback-resumes"));
+        var syncService = configSyncService(images);
+        var originalConfig = jdbc.queryForMap("SELECT * FROM boss_config WHERE account_id=?", target);
+        jdbc.update("INSERT INTO boss_blacklist(account_id,type,value) VALUES(1,'job','来源黑名单'),(?,'job','目标黑名单')", target);
+        saveSyncImage(images, 1, "jpg", 0xFF1111);
+        Path originalImage = saveSyncImage(images, target, "png", 0x1010FF);
+        byte[] originalBytes = Files.readAllBytes(originalImage);
+        jdbc.execute("CREATE TRIGGER fail_sync BEFORE UPDATE OF introduce ON boss_accounts WHEN OLD.id=" + target
+                + " BEGIN SELECT RAISE(ABORT,'synthetic sync failure'); END");
+
+        var failure = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> syncService.sync(1, target));
+        assertEquals(500, failure.getStatusCode().value());
+        assertEquals(originalConfig, jdbc.queryForMap("SELECT * FROM boss_config WHERE account_id=?", target));
+        assertEquals(List.of("目标黑名单"), jdbc.queryForList("SELECT value FROM boss_blacklist WHERE account_id=?", String.class, target));
+        try (var scope = BossAccountContext.use(target)) {
+            assertEquals(originalImage, images.getCurrentImagePath().orElseThrow());
+            assertArrayEquals(originalBytes, Files.readAllBytes(originalImage));
+            assertFalse(Files.exists(originalImage.resolveSibling("resume.jpg")));
+        }
+        locks.reserve(List.of(target));
+        locks.release();
+    }
+
+    private BossConfigSyncService configSyncService(BossResumeImageService images) {
+        new BossReviewStore(jdbc, new com.fasterxml.jackson.databind.ObjectMapper()).migrate();
+        return new BossConfigSyncService(jdbc, accounts, locks, images,
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+    }
+
+    private static Path saveSyncImage(BossResumeImageService images, long accountId, String format, int color) throws Exception {
+        var image = new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        image.setRGB(0, 0, color);
+        var contents = new java.io.ByteArrayOutputStream();
+        assertTrue(javax.imageio.ImageIO.write(image, format, contents));
+        try (var scope = BossAccountContext.use(accountId)) {
+            return images.save(new org.springframework.mock.web.MockMultipartFile(
+                    "file", "resume." + format, "image/" + format, contents.toByteArray())).path();
+        }
+    }
+
     @Test void httpRequestsScopeUpdatesAndStreamsAndRejectCrossAccountAndLockedWrites() throws Exception {
         long second=accounts.create("第二账号",null).id();
         var registry=new org.springframework.web.servlet.config.annotation.InterceptorRegistry() {

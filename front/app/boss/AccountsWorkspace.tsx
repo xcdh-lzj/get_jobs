@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { API_BASE } from '@/lib/api'
 import { bossUrl, moveQueueAccount, queueStateLabel, type BossAccount, type BossQueue } from '@/lib/boss-accounts'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { UserRound } from 'lucide-react'
+import { Select } from '@/components/ui/select'
+import { Copy, UserRound } from 'lucide-react'
 import { useWorkspaceEdits, useWorkspaceEditor } from '@/app/components/WorkspaceEdits'
 import { writeWorkspaceJson } from '@/lib/workspace-save'
 
-export default function AccountsWorkspace({ children }: { children: (id: number, queue: BossQueue | null, name: string, management: ReactNode) => ReactNode }) {
+export default function AccountsWorkspace({ children }: {
+  children: (id: number, queue: BossQueue | null, name: string, management: ReactNode, initialSection: string) => ReactNode
+}) {
   const { confirmLeave, saving, editors } = useWorkspaceEdits()
   const hasDraft = editors.some(editor => editor.dirty)
   const editorsReady = editors.length >= 3 && editors.every(editor => editor.ready)
@@ -22,6 +25,9 @@ export default function AccountsWorkspace({ children }: { children: (id: number,
   const [copy, setCopy] = useState(false)
   const [rename, setRename] = useState('')
   const [pending, setPending] = useState(false)
+  const [syncSourceId, setSyncSourceId] = useState('')
+  const [syncingConfigs, setSyncingConfigs] = useState(false)
+  const [configSyncVersion, setConfigSyncVersion] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const request = useRef<AbortController | null>(null)
@@ -29,6 +35,8 @@ export default function AccountsWorkspace({ children }: { children: (id: number,
   const busy = queue?.isRunning ?? false
   const selectedAccount = accounts.find(a => a.id === selected)
   const locked = busy && !!queue?.items.some(item => item.accountId === selected)
+  const syncSources = accounts.filter(account => account.id !== selected)
+  const syncSource = syncSources.find(account => String(account.id) === syncSourceId)
 
   const refresh = useCallback(async () => {
     if (request.current) return
@@ -68,8 +76,9 @@ export default function AccountsWorkspace({ children }: { children: (id: number,
   }, [refresh])
 
   const select = async (id: number) => {
-    if (id === selected || !(await confirmLeave())) return
+    if (id === selected || syncingConfigs || !(await confirmLeave())) return
     setSelected(id); setRename(''); localStorage.setItem('boss-account-id', String(id)); setMessage('')
+    setSyncSourceId(''); setConfigSyncVersion(0)
   }
   const action = async (path: string, body?: unknown, method = 'POST') => {
     setPending(true); setMessage(''); setError('')
@@ -88,7 +97,44 @@ export default function AccountsWorkspace({ children }: { children: (id: number,
     finally { setPending(false) }
   }
 
+  const syncConfigs = async () => {
+    if (!syncSource || !selectedAccount || pending || saving || hasDraft || locked) return
+    setSyncingConfigs(true)
+    try {
+      const result = await action(`/api/boss/accounts/${selected}/sync-config`, { sourceAccountId: syncSource.id })
+      if (result) setConfigSyncVersion(version => version + 1)
+    } finally {
+      setSyncingConfigs(false)
+    }
+  }
+
   const management = <div className="form-columns">
+    <Card className="lg:col-span-2">
+      <CardHeader>
+        <CardTitle>同步全部配置</CardTitle>
+        <CardDescription>用来源账号的已保存配置覆盖当前账号「{selectedAccount?.name || '当前账号'}」。</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {syncSources.length ? <>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-full max-w-xs space-y-1.5">
+              <label htmlFor="boss-config-sync-source" className="block text-sm font-medium">来源账号</label>
+              <Select id="boss-config-sync-source" value={syncSourceId} placeholder="选择要复制的账号"
+                disabled={pending || saving || locked} onChange={event => setSyncSourceId(event.target.value)}
+              >
+                {syncSources.map(account => <option key={account.id} value={account.id}>{account.name}（账号 {account.id}）</option>)}
+              </Select>
+            </div>
+            <Button type="button" disabled={!syncSource || pending || saving || hasDraft || locked}
+              onClick={() => void syncConfigs()}
+            ><Copy className="h-4 w-4" />同步全部到当前账号</Button>
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">同步投递筛选、城市计划、HR 活跃规则、精准审核、Token 设置、黑名单、招呼语、个人介绍、AI 提示词和图片简历。</p>
+          {hasDraft && <p className="text-sm text-amber-700 dark:text-amber-300">当前账号有未保存修改，请先保存或撤销。</p>}
+          {locked && <p className="text-sm text-amber-700 dark:text-amber-300">当前账号正在投递或等待队列，任务结束后可以同步。</p>}
+        </> : <p className="text-sm text-muted-foreground">添加第二个 Boss 账号后，即可同步配置。</p>}
+      </CardContent>
+    </Card>
     <Card>
       <CardHeader><CardTitle>账号与登录 <span className="instant-badge ml-2">操作即时生效</span></CardTitle></CardHeader>
       <CardContent className="space-y-4">
@@ -152,12 +198,13 @@ export default function AccountsWorkspace({ children }: { children: (id: number,
       <div><p className="section-eyebrow">Delivery workspace</p><h1 className="text-2xl font-semibold tracking-tight">Boss 投递工作台</h1><p className="mt-1.5 text-sm text-muted-foreground">管理账号与投递策略，专注每一次有效沟通。</p></div>
       <div className="flex items-center gap-3 rounded-xl border bg-card px-3.5 py-2.5 shadow-sm">
         <span className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-50 text-teal-700 dark:bg-teal-950 dark:text-teal-300"><UserRound className="h-4 w-4" /></span>
-        <div><label htmlFor="boss-account" className="block text-[10px] text-muted-foreground">当前账号</label><select id="boss-account" aria-label="当前查看账号" value={selected} disabled={saving} onChange={e => void select(Number(e.target.value))} className="max-w-52 border-0 bg-transparent py-0.5 pr-4 text-sm font-semibold focus:outline-none">{accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.isLoggedIn ? ' · 已登录' : ' · 待登录'}</option>)}</select></div>
+        <div><label htmlFor="boss-account" className="block text-[10px] text-muted-foreground">当前账号</label><select id="boss-account" aria-label="当前查看账号" value={selected} disabled={saving || syncingConfigs} onChange={e => void select(Number(e.target.value))} className="max-w-52 border-0 bg-transparent py-0.5 pr-4 text-sm font-semibold focus:outline-none">{accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.isLoggedIn ? ' · 已登录' : ' · 待登录'}</option>)}</select></div>
       </div>
     </div>
     {message && <p role="status" className="rounded-lg border border-green-300 p-3 text-sm text-green-700">{message}</p>}
     {error && <p role="alert" className="rounded-lg border border-red-300 p-3 text-sm text-red-600">{error}</p>}
-    {selectedAccount ? <div key={selected}>{children(selected, queue, selectedAccount.name, management)}</div> : <div className="rounded-xl border bg-card p-10 text-center text-sm text-muted-foreground">正在读取账号，请确认后端服务已启动。{error && <Button variant="outline" className="ml-3" onClick={() => void refresh()}>重新连接</Button>}</div>}
+    {syncingConfigs && <p role="status" className="rounded-lg border p-3 text-sm text-muted-foreground">正在同步当前账号的全部配置…</p>}
+    {selectedAccount ? <div key={`${selected}:${configSyncVersion}`} inert={syncingConfigs || undefined}>{children(selected, queue, selectedAccount.name, management, configSyncVersion ? 'accounts' : 'overview')}</div> : <div className="rounded-xl border bg-card p-10 text-center text-sm text-muted-foreground">正在读取账号，请确认后端服务已启动。{error && <Button variant="outline" className="ml-3" onClick={() => void refresh()}>重新连接</Button>}</div>}
   </div>
 }
 

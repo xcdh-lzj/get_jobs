@@ -112,11 +112,11 @@ function toBracketList(list: string[]): string {
 
 
 export default function BossPage() {
-  return <AccountsWorkspace>{(accountId, queue, accountName, management) => <BossAccountPage key={accountId} accountId={accountId} queue={queue} accountName={accountName} management={management} />}</AccountsWorkspace>
+  return <AccountsWorkspace>{(accountId, queue, accountName, management, initialSection) => <BossAccountPage key={accountId} accountId={accountId} queue={queue} accountName={accountName} management={management} initialSection={initialSection} />}</AccountsWorkspace>
 }
 
-function BossAccountPage({ accountId, queue, accountName, management }: { accountId: number; queue: BossQueue | null; accountName: string; management: ReactNode }) {
-  const [section, setSection] = useState('overview')
+function BossAccountPage({ accountId, queue, accountName, management, initialSection }: { accountId: number; queue: BossQueue | null; accountName: string; management: ReactNode; initialSection: string }) {
+  const [section, setSection] = useState(initialSection)
   const { saving, editors } = useWorkspaceEdits()
   const hasUnsaved = editors.some(editor => editor.dirty)
   const editorsReady = editors.length >= 3 && editors.every(editor => editor.ready)
