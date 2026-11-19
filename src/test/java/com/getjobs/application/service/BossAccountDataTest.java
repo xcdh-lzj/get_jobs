@@ -6,10 +6,12 @@ import com.getjobs.application.mapper.*;
 import com.getjobs.application.service.BossService.HistoryFilters;
 import com.getjobs.application.service.BossService.HistorySort;
 import org.apache.ibatis.session.SqlSession;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
+import java.io.ByteArrayInputStream;
 import java.nio.file.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -473,6 +475,20 @@ class BossAccountDataTest {
         assertTrue(csv.getFirst().endsWith("\"处理时间\""));
         assertTrue(csv.get(1).contains("示例已过滤") && csv.get(1).endsWith("\"2026-11-19 23:59:59\""));
         assertTrue(csv.getLast().contains("示例已投递") && csv.getLast().endsWith("\"2026-11-19 00:00:00\""));
+
+        var excelRequest = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/boss/jobs.xlsx")
+                        .params(day).param("sort", "PROCESSED_DESC")).andReturn();
+        var excel = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch(excelRequest))
+                .andReturn().getResponse();
+        assertEquals(200, excel.getStatus());
+        assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", excel.getContentType());
+        assertTrue(excel.getHeader("Content-Disposition").startsWith("attachment; filename=\"boss_jobs_1_"));
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(excel.getContentAsByteArray()))) {
+            var records = workbook.getSheet("岗位记录");
+            assertEquals(7, records.getLastRowNum());
+            assertEquals("示例已过滤", records.getRow(4).getCell(2).getStringCellValue());
+            assertEquals("示例已投递", records.getRow(7).getCell(2).getStringCellValue());
+        }
     }
 
     private static HistoryFilters unfilteredHistory() {

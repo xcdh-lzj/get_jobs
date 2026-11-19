@@ -10,6 +10,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.time.LocalDate;
 import java.util.Map;
@@ -18,6 +19,7 @@ import java.util.Map;
 @CrossOrigin(origins = "*")
 @RequestMapping("/api/boss")
 public class BossAnalyticsController {
+    private static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private final BossService bossService;
 
@@ -61,6 +63,23 @@ public class BossAnalyticsController {
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + name + "\"")
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .body(BossJobCsv.encode(jobs));
+    }
+
+    @GetMapping(value = "/jobs.xlsx", produces = XLSX)
+    public ResponseEntity<StreamingResponseBody> exportWorkbook(
+            @ModelAttribute(binding = false) HistoryFilters filters,
+            @RequestParam(value = "sort", defaultValue = "RECORDED_DESC") HistorySort sort
+    ) {
+        validateDateRange(filters);
+        // 查询在请求线程完成，流式写出使用已按该账号筛选的查询结果。
+        var jobs = bossService.exportBossJobs(filters, sort);
+        String name = "boss_jobs_" + BossAccountContext.id() + "_" + LocalDate.now() + ".xlsx";
+        StreamingResponseBody stream = output -> BossJobWorkbook.write(jobs, output);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(XLSX))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + name + "\"")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(stream);
     }
 
     private static void validateDateRange(HistoryFilters filters) {
