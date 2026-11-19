@@ -794,7 +794,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                   <div className="space-y-1">
                     <Label htmlFor="allowRepeatChat" className="text-base font-medium">向已沟通 Boss 再次发送消息</Label>
                     <p className="text-xs leading-6 text-muted-foreground">
-                      开启后，遇到“继续沟通”会随机发送下方一行消息；关闭时跳过该岗位。首次沟通仍使用 AI 或默认打招呼语。
+                      开启并填写跟进消息后，遇到“继续沟通”或“沟通新职位”会发送一条跟进消息。更换沟通职位时，BOSS 会通知招聘者。关闭时跳过该岗位。
                     </p>
                   </div>
                   <button

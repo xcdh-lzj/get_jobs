@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-/** 岗位详情 → 已沟通确认框 → 聊天页。不在此处输入或发送消息。 */
+/** 负责沟通页面导航、弹窗处理和聊天控件操作。 */
 @Slf4j
 final class BossChatNavigator implements AutoCloseable {
     static final String INPUT = "div#chat-input.chat-input[contenteditable='true'], textarea.input-area";
@@ -34,6 +34,10 @@ final class BossChatNavigator implements AutoCloseable {
     private record ReminderAttempt(ElementHandle message,String text) {}
     private final Map<Page,ReminderAttempt> reminderAttempts=new IdentityHashMap<>();
     private int reminderClicks;
+    private boolean allowRepeatChat;
+    private Page chatPage;
+    private Page newPositionPage;
+    private boolean draftFilled;
 
     BossChatNavigator(Page origin) {
         this(origin,ignored -> {});
@@ -47,6 +51,7 @@ final class BossChatNavigator implements AutoCloseable {
     Chat open(Locator button, boolean repeat, boolean allowRepeat, Supplier<Boolean> stop, long timeoutMs) {
         if (stop != null && Boolean.TRUE.equals(stop.get())) return null;
         if (repeat && !allowRepeat) return null;
+        allowRepeatChat = allowRepeat;
         checkBlockingNotices();
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         String entryUrl = origin.url();
@@ -80,12 +85,17 @@ final class BossChatNavigator implements AutoCloseable {
                 // 点击可能立即出现额度提醒，先重新检查，不能接受弹窗下方的输入框。
                 continue;
             }
+            if (handleNewPosition(deadline, stop)) {
+                if (!pump()) return null;
+                continue;
+            }
             List<Page> candidates = new ArrayList<>(popups);
-            if (candidates.stream().allMatch(Page::isClosed)) candidates.add(origin);
+            if (newPositionPage != null) candidates = List.of(newPositionPage);
+            else if (candidates.stream().allMatch(Page::isClosed)) candidates.add(origin);
             for (Page candidate : candidates) {
                 if (candidate.isClosed()) continue;
                 try {
-                    Locator confirmation = !confirmed && System.nanoTime() < confirmationDeadline
+                    Locator confirmation = newPositionPage == null && !confirmed && System.nanoTime() < confirmationDeadline
                             ? findConfirmation(candidate) : null;
                     if (confirmation != null) {
                         // “已向BOSS发送消息”也是首次打招呼的结果通知，不能据此改成旧会话。
@@ -106,15 +116,16 @@ final class BossChatNavigator implements AutoCloseable {
                         }
                         continue;
                     }
-                    if (confirmed && candidate == confirmationPage && candidate.url().equals(confirmationUrl)) {
+                    if (newPositionPage == null && confirmed && candidate == confirmationPage && candidate.url().equals(confirmationUrl)) {
                         continue;
                     }
-                    if (repeat && candidate == origin && candidate.url().equals(entryUrl)) continue;
+                    if (newPositionPage == null && repeat && candidate == origin && candidate.url().equals(entryUrl)) continue;
                     // 每轮新建定位器，避免导航后继续使用旧 frame 的输入框。
                     Locator input = candidate.locator(INPUT).first();
                     if (input.isVisible() && input.isEditable(new Locator.IsEditableOptions().setTimeout(500))) {
                         checkBlockingNotices();
-                        return new Chat(candidate, input, repeat);
+                        chatPage = candidate;
+                        return new Chat(candidate, input, repeat || switchedPosition());
                     }
                 } catch (PlaywrightException navigationError) {
                     log.debug("聊天页正在切换，继续等待：{}", navigationError.getMessage());
@@ -124,6 +135,10 @@ final class BossChatNavigator implements AutoCloseable {
         }
         log.warn("等待聊天页超时，未发送消息；请检查是否存在未识别的弹框");
         return null;
+    }
+
+    boolean switchedPosition() {
+        return newPositionPage != null;
     }
 
     void checkDailyLimit() {
@@ -139,19 +154,19 @@ final class BossChatNavigator implements AutoCloseable {
         for (Page popup : new ArrayList<>(popups)) BossJobBlock.check(popup);
     }
 
-    /** 输入和发送前再次处理晚到的额度提醒；停止后不再点击确认。 */
+    /** 输入和发送前再次处理晚到的沟通弹窗。 */
     boolean prepareToSend(Supplier<Boolean> stop,long timeoutMs) {
         long deadline=System.nanoTime()+timeoutMs*1_000_000L;
         while(System.nanoTime()<deadline) {
             if(stop!=null && Boolean.TRUE.equals(stop.get()))return false;
             checkBlockingNotices();
-            if(!handleQuotaReminders(deadline,stop)) {
+            if(!handleQuotaReminders(deadline,stop) && !handleNewPosition(deadline,stop)) {
                 checkBlockingNotices();
                 return true;
             }
             if(!pump())return false;
         }
-        log.warn("剩余额度提醒尚未关闭，当前岗位未发送消息");return false;
+        log.warn("沟通弹窗尚未关闭，当前岗位未发送消息");return false;
     }
 
     /** 阻断出现于 open 返回之后时，再核对一次；单个控件操作不使用默认30秒等待。 */
@@ -162,6 +177,7 @@ final class BossChatNavigator implements AutoCloseable {
             if(!prepareInteraction(input,stop,timeoutMs))return false;
             // fill 同时支持 textarea 与 contenteditable，并派发正常的 input 事件。
             input.fill(message,new Locator.FillOptions().setTimeout(timeoutMs));
+            draftFilled = true;
             checkBlockingNotices();return true;
         }catch(PlaywrightException blocked) {throw interactionFailure(input,"聊天输入框暂不可操作",blocked);}
     }
@@ -186,7 +202,7 @@ final class BossChatNavigator implements AutoCloseable {
             if(handleQuotaReminders(deadline,stop)) {if(!pump())break;continue;}
             obstacle=BossChatOverlay.find(target);
             if(obstacle==null)return true;
-            requireNoVerification(obstacle);
+            checkInteractionOverlay(obstacle);
             if(!pump())break;
         }
         checkBlockingNotices();
@@ -196,7 +212,7 @@ final class BossChatNavigator implements AutoCloseable {
     private BossChatInteractionException interactionFailure(Locator target,String fallback,PlaywrightException cause) {
         // 工作经历限制和每日额度提醒可能在点击等待期间才出现，保留它们原有的处理层级。
         checkBlockingNotices();
-        var obstacle=BossChatOverlay.find(target);requireNoVerification(obstacle);
+        var obstacle=BossChatOverlay.find(target);checkInteractionOverlay(obstacle);
         return new BossChatInteractionException(obstacle==null?fallback:overlayReason(obstacle),cause);
     }
     private static String overlayReason(BossChatOverlay.Notice obstacle) {
@@ -207,9 +223,67 @@ final class BossChatNavigator implements AutoCloseable {
         if(obstacle!=null && obstacle.requiresUserAction())
             throw new IllegalStateException("Boss 弹窗要求安全验证或重新登录，已停止本次任务："+obstacle.summary());
     }
+
+    private void checkInteractionOverlay(BossChatOverlay.Notice obstacle) {
+        requireNoVerification(obstacle);
+        if (obstacle != null && BossNewPositionDialog.matches(obstacle.text())) {
+            requireRepeatChat();
+            throw new BossJobBlockedException("Boss 在聊天操作期间要求确认沟通新职位，已跳过该岗位");
+        }
+    }
+
+    private void requireRepeatChat() {
+        if (!allowRepeatChat) {
+            throw new BossJobBlockedException("Boss 提示已与该招聘者沟通过，当前账号关闭了重复沟通或未配置跟进消息");
+        }
+    }
+
+    private List<Page> ownedPages() {
+        List<Page> owned = new ArrayList<>();
+        owned.add(origin);
+        owned.addAll(popups);
+        return owned;
+    }
+
+    private boolean handleNewPosition(long deadline, Supplier<Boolean> stop) {
+        for (Page candidate : ownedPages()) {
+            if (candidate.isClosed()) continue;
+            Locator confirmation;
+            try {
+                confirmation = BossNewPositionDialog.findConfirmation(candidate);
+            } catch (PlaywrightException navigating) {
+                log.debug("检查新职位确认框时页面正在切换：{}", navigating.getMessage());
+                continue;
+            }
+            if (confirmation == null) continue;
+            requireRepeatChat();
+            if (draftFilled || chatPage != null && candidate != chatPage) {
+                throw new BossJobBlockedException("Boss 在聊天就绪后要求更换沟通职位，已跳过该岗位");
+            }
+            if (newPositionPage != null) return true;
+            checkBlockingNotices();
+            requireNoVerification(BossChatOverlay.find(confirmation));
+            long remaining = (deadline - System.nanoTime()) / 1_000_000L;
+            if (remaining <= 0 || stop != null && Boolean.TRUE.equals(stop.get())) return true;
+            try {
+                confirmation.click(new Locator.ClickOptions().setTimeout(Math.min(remaining, 1_000)));
+            } catch (PlaywrightException failure) {
+                checkBlockingNotices();
+                requireNoVerification(BossChatOverlay.find(confirmation));
+                throw new BossChatInteractionException("Boss 的「沟通新职位」确认未完成，已跳过该岗位", failure);
+            }
+            newPositionPage = candidate;
+            String message = "已点击「沟通新职位」，等待聊天区域就绪";
+            log.info(message);
+            progress.accept(message);
+            return true;
+        }
+        return false;
+    }
+
     private boolean handleQuotaReminders(long deadline,Supplier<Boolean> stop) {
-        boolean found=false;var owned=new ArrayList<Page>();owned.add(origin);owned.addAll(new ArrayList<>(popups));
-        for(var candidate:owned) {
+        boolean found=false;
+        for(var candidate:ownedPages()) {
             if(candidate.isClosed())continue;
             try {
                 var notice=BossQuotaReminder.find(candidate);

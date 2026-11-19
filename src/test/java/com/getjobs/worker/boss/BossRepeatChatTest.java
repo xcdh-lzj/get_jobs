@@ -14,8 +14,15 @@ import static org.mockito.Mockito.*;
 
 class BossRepeatChatTest {
     @ParameterizedTest
-    @CsvSource({"立即沟通,false,true,false", "立即沟通,true,true,false", "继续沟通,false,false,false", "继续沟通,true,true,false", "立即沟通,,true,false", "继续沟通,,false,false", "已关闭,true,false,false", "继续沟通,true,false,true"})
-    void sendsOnlyWhenButtonAndSwitchAllow(String text, Boolean enabled, boolean expected, boolean emptyMessages) throws Exception {
+    @CsvSource({
+            "立即沟通,false,true,false,false", "立即沟通,true,true,false,false",
+            "继续沟通,false,false,false,false", "继续沟通,true,true,false,false",
+            "立即沟通,,true,false,false", "继续沟通,,false,false,false",
+            "已关闭,true,false,false,false", "继续沟通,true,false,true,false",
+            "立即沟通,true,true,true,false", "立即沟通,true,true,false,true"
+    })
+    void sendsOnlyWhenButtonAndSwitchAllow(String text, Boolean enabled, boolean expected, boolean emptyMessages,
+                                          boolean switchedPosition) throws Exception {
         BossService service = mock(BossService.class);
         Boss boss = new Boss(service, null, null, null, null, null);
         BossConfig config = new BossConfig();
@@ -57,6 +64,7 @@ class BossRepeatChatTest {
         try (var ignored = mockStatic(PlaywrightUtil.class);
              var navigators = mockConstruction(BossChatNavigator.class, (navigator, construction) -> {
                  when(navigator.prepareToSend(any(),anyLong())).thenReturn(true);
+                 when(navigator.switchedPosition()).thenReturn(switchedPosition);
                  when(navigator.fillMessage(any(),anyString(),any(),anyLong())).thenAnswer(call->{input.fill(call.getArgument(1));return true;});
                  when(navigator.sendMessage(any(),any(),anyLong())).thenAnswer(call->{send.click();return true;});
                  when(navigator.open(any(), anyBoolean(), anyBoolean(), any(), anyLong())).thenAnswer(invocation -> {
@@ -66,9 +74,13 @@ class BossRepeatChatTest {
              })) {
             ignored.when(() -> PlaywrightUtil.newBackgroundPage(listing)).thenReturn(detail);
             assertEquals(expected, submission.invoke(boss, "Java", job));
+            if (expected) {
+                verify(navigators.constructed().getFirst()).open(eq(button), eq("继续沟通".equals(text)),
+                        eq(Boolean.TRUE.equals(enabled) && !emptyMessages), any(), anyLong());
+            }
         }
         verify(button, times(expected ? 1 : 0)).click();
-        verify(input, times(expected ? 1 : 0)).fill("继续沟通".equals(text) ? "自定义跟进消息" : config.getSayHi());
+        verify(input, times(expected ? 1 : 0)).fill("继续沟通".equals(text) || switchedPosition ? "自定义跟进消息" : config.getSayHi());
         verify(send, times(expected ? 1 : 0)).click();
         verify(detail).close();
     }

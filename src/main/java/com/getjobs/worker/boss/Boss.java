@@ -1273,7 +1273,7 @@ public class Boss {
             Locator chatBtn = detailPage.locator("a.btn-startchat, a.op-btn-chat");
             boolean foundChatBtn = false;
             boolean repeatChat = false;
-            String repeatMessage = null;
+            boolean allowRepeatChat = Boolean.TRUE.equals(config.getAllowRepeatChat());
             for (int i = 0; i < 5; i++) {
                 if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
                     log.info("停止指令已触发，结束查找聊天按钮 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
@@ -1284,14 +1284,14 @@ public class Boss {
                     String buttonText = chatBtn.first().textContent();
                     previouslyContacted=buttonText!=null && buttonText.contains("继续沟通");
                     if (buttonText != null && buttonText.contains("继续沟通")
-                            && !Boolean.TRUE.equals(config.getAllowRepeatChat())) {
+                            && !allowRepeatChat) {
                         lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNAVAILABLE;
                         log.info("已关闭重复沟通，跳过已沟通Boss | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                         try { detailPage.close(); } catch (Exception ignore) {}
                         return skipSubmission("已沟通过，当前账号关闭了重复沟通");
                     }
                     if (buttonText != null && (buttonText.contains("立即沟通")
-                            || (buttonText.contains("继续沟通") && Boolean.TRUE.equals(config.getAllowRepeatChat())))) {
+                            || (buttonText.contains("继续沟通") && allowRepeatChat))) {
                         foundChatBtn = true;
                         repeatChat = buttonText.contains("继续沟通");
                         break;
@@ -1308,29 +1308,19 @@ public class Boss {
                 }
                 return skipSubmission("未找到可用的沟通入口");
             }
-            if (repeatChat) {
-                repeatMessage = config.randomRepeatChatMessage();
-                if (repeatMessage == null) {
-                    log.info("重复沟通消息列表为空，跳过岗位：{}", job.getJobName());
-                    try { detailPage.close(); } catch (Exception ignore) {}
-                    return skipSubmission("未配置重复沟通消息");
-                }
+            // “立即沟通”也可能进入已有会话，先选定跟进文案再允许确认新职位。
+            String repeatMessage = allowRepeatChat ? config.randomRepeatChatMessage() : null;
+            if (repeatChat && repeatMessage == null) {
+                log.info("重复沟通消息列表为空，跳过岗位：{}", job.getJobName());
+                try { detailPage.close(); } catch (Exception ignore) {}
+                return skipSubmission("未配置重复沟通消息");
             }
             if (progressCallback != null) progressCallback.accept("正在打开沟通页面：" + job.getJobName(), null, null);
             BossChatNavigator.Chat chat = navigator.open(chatBtn.first(), repeatChat,
-                    Boolean.TRUE.equals(config.getAllowRepeatChat()), shouldStopCallback, 20_000);
+                    repeatMessage != null, shouldStopCallback, 20_000);
             if (chat == null) return skipSubmission("未打开可用的沟通页面");
             detailPage = chat.page();
             repeatChat = chat.repeat();
-            previouslyContacted=repeatChat;
-            // 重复沟通状态由岗位按钮决定，通知框本身不代表旧会话。
-            if (repeatChat && repeatMessage == null) {
-                repeatMessage = config.randomRepeatChatMessage();
-                if (repeatMessage == null) {
-                    log.info("重复沟通消息列表为空，跳过岗位：{}", job.getJobName());
-                    return skipSubmission("未配置重复沟通消息");
-                }
-            }
             Locator inputLocator = chat.input();
 
             // 5. AI智能生成打招呼语
@@ -1354,8 +1344,11 @@ public class Boss {
                     aiMessage = decision.message();
                 }
             }
-            String message = repeatChat ? repeatMessage : (isValidString(aiMessage) ? aiMessage : config.getSayHi());
             if(!navigator.prepareToSend(shouldStopCallback,2_000))return skipSubmission("沟通页面未就绪或任务已取消");
+            boolean switchedPosition = navigator.switchedPosition();
+            repeatChat = repeatChat || switchedPosition;
+            previouslyContacted = repeatChat;
+            String message = repeatChat ? repeatMessage : (isValidString(aiMessage) ? aiMessage : config.getSayHi());
 
             if (progressCallback != null) progressCallback.accept("正在发送招呼语：" + job.getJobName(), null, null);
             // 6. 输入打招呼语
@@ -1396,7 +1389,8 @@ public class Boss {
             if (sendSuccess) {
                 lastSubmissionOutcome=previouslyContacted?BossCityYieldMonitor.Outcome.UNAVAILABLE:BossCityYieldMonitor.Outcome.NEW_JOB;
                 lastSubmissionStatus = "已投递";
-                lastSubmissionReason = repeatChat ? "已发送重复沟通消息" : "已完成招呼语发送流程";
+                lastSubmissionReason = switchedPosition ? "已切换沟通职位并发送跟进消息"
+                        : repeatChat ? "已发送重复沟通消息" : "已完成招呼语发送流程";
                 lastDeliveredAt = sentAt;
                 resultList.add(job);
             } else {

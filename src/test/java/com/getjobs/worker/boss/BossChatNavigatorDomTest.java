@@ -313,4 +313,99 @@ class BossChatNavigatorDomTest {
             assertNull(navigator.open(page.locator("#job-button"), true, true, () -> true, 1_000));
         }
     }
+
+    private static String newPositionDialog(String action) {
+        return """
+                <div data-type="boss-dialog" class="dialog-wrap active" id="position-dialog">
+                  <div class="boss-layer__wrapper" style="position:fixed;inset:0;z-index:10"></div>
+                  <div class="boss-dialog__main" style="position:fixed;top:100px;left:60px;z-index:11">
+                    <h3>温馨提示</h3>
+                    <p>您与该Boss已沟通过，是否就新职位<span>软件开发工程师（中级）</span>继续沟通？</p>
+                    <p>注：更换沟通职位将通知Boss</p>
+                    <button onclick="window.cancelled=true">取消</button>
+                    <a href="javascript:;" onclick="%s">沟通新职位</a>
+                  </div>
+                </div>
+                """.formatted(action);
+    }
+
+    private void newPositionFixture(boolean popup, String action) {
+        String chat = "<textarea class='input-area'></textarea>" + newPositionDialog(action);
+        context.route("http://getjobs.test/new-position", route -> route.fulfill(new Route.FulfillOptions()
+                .setContentType("text/html; charset=utf-8").setBody(chat)));
+        page.setContent("""
+                <button id="start">立即沟通</button>
+                <button onclick="window.unrelatedClicked=true">沟通新职位</button>
+                <div id="mount"></div>
+                """);
+        page.evaluate("""
+                ([popup, chat]) => document.querySelector('#start').onclick = () => {
+                    if (popup) window.open('http://getjobs.test/new-position');
+                    else document.querySelector('#mount').innerHTML = chat;
+                }
+                """, java.util.List.of(popup, chat));
+    }
+
+    @ParameterizedTest @CsvSource({"false,false", "false,true", "true,false"})
+    void switchesToTheNewPositionOnceInTheCurrentOrNewTab(boolean popup, boolean repeatButton) {
+        newPositionFixture(popup, "window.confirmed=(window.confirmed||0)+1;document.querySelector('#position-dialog').remove()");
+        try (var navigator = new BossChatNavigator(page)) {
+            var chat = navigator.open(page.locator("#start"), repeatButton, true, null, 3_000);
+            assertNotNull(chat);
+            assertTrue(chat.repeat());
+            assertTrue(navigator.switchedPosition());
+            assertEquals(popup, chat.page() != page);
+            assertEquals(1, chat.page().evaluate("() => window.confirmed"));
+            assertEquals(0, chat.page().locator("#position-dialog").count());
+            assertNull(chat.page().evaluate("() => window.cancelled"));
+            assertNull(page.evaluate("() => window.unrelatedClicked"));
+        }
+    }
+
+    @Test void existingContactIsSkippedWhenThereIsNoUsableFollowUp() {
+        newPositionFixture(false, "window.confirmed=true");
+        try (var navigator = new BossChatNavigator(page)) {
+            var blocked = assertThrows(BossJobBlockedException.class,
+                    () -> navigator.open(page.locator("#start"), false, false, null, 3_000));
+            assertTrue(blocked.getMessage().contains("已与该招聘者沟通过"));
+            assertFalse(navigator.switchedPosition());
+            assertNull(page.evaluate("() => window.confirmed"));
+        }
+    }
+
+    @ParameterizedTest @CsvSource({"false", "true"})
+    void handlesLateNewPositionConfirmationOnlyBeforePreparingADraft(boolean draftFilled) {
+        page.setContent("<button id='start'>立即沟通</button><textarea class='input-area'></textarea><div id='notice'></div>");
+        try (var navigator = new BossChatNavigator(page)) {
+            var chat = navigator.open(page.locator("#start"), false, true, null, 3_000);
+            assertNotNull(chat);
+            assertFalse(chat.repeat());
+            if (draftFilled) assertTrue(navigator.fillMessage(chat.input(), "合成招呼语", null, 1_000));
+            String dialog = newPositionDialog("window.confirmed=true;document.querySelector('#position-dialog').remove()");
+            page.locator("#notice").evaluate("(element, html) => element.innerHTML = html", dialog);
+            if (draftFilled) {
+                assertThrows(BossJobBlockedException.class, () -> navigator.prepareToSend(null, 2_000));
+                assertNull(page.evaluate("() => window.confirmed"));
+            } else {
+                assertTrue(navigator.prepareToSend(null, 2_000));
+                assertTrue(navigator.switchedPosition());
+                assertEquals(true, page.evaluate("() => window.confirmed"));
+            }
+        }
+    }
+
+    @Test void confirmationIsNeverRetriedWhenTheDialogStaysVisible() {
+        newPositionFixture(false, "window.confirmed=(window.confirmed||0)+1");
+        try (var navigator = new BossChatNavigator(page)) {
+            assertNull(navigator.open(page.locator("#start"), false, true, null, 1_500));
+            assertEquals(1, page.evaluate("() => window.confirmed"));
+        }
+    }
+
+    @Test void sameButtonWithVerificationTextDoesNotAuthorizeChangingPosition() {
+        page.setContent(newPositionDialog("window.confirmed=true")
+                .replace("<h3>温馨提示</h3>", "<h3>温馨提示</h3><p>请完成安全验证</p>"));
+        assertNull(BossNewPositionDialog.findConfirmation(page));
+        assertNull(page.evaluate("() => window.confirmed"));
+    }
 }
