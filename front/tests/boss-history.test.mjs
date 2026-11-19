@@ -21,6 +21,43 @@ function load(sourcePath) {
   return compiledModule.exports
 }
 const { bossHistoryUrl, bossHistorySearchText, bossProcessingDateRange } = load('lib/boss-history.ts')
+const { formatBossDescription } = load('lib/boss-description.ts')
+
+test('flattened job descriptions use real headings and list items while preserving the text for copying', () => {
+  const jd = '一、岗位介绍参与软件研发。⼆、 岗位职责1. 负责 Java 21 和 Spring Boot 3.2 服务；2. 维护 CI/CD 与数据库。三、任职要求1）熟悉前端；2）具备测试经验。四、加分项- 有 Agent 工具链经验。- 熟悉数据平台。'
+  const intro = '关于我们：示例公司成立于 2020 年，专注于软件服务。'
+  const { jobSections, companySections, jobText, companyText } = formatBossDescription(jd + '\n' + intro)
+  assert.deepEqual(jobSections.map(section => section.heading), ['一、岗位介绍', '⼆、 岗位职责', '三、任职要求', '四、加分项'])
+  assert.deepEqual(jobSections[1].blocks[0].items, [
+    { text: '负责 Java 21 和 Spring Boot 3.2 服务；', number: 1 },
+    { text: '维护 CI/CD 与数据库。', number: 2 },
+  ])
+  assert.equal(jobSections[2].blocks[0].items.length, 2)
+  assert.equal(jobSections[3].blocks[0].ordered, false)
+  assert.equal(jobSections[3].blocks[0].items.length, 2)
+  assert.equal(companySections[0].heading, '关于我们')
+  assert.equal(jobText, jd)
+  assert.equal(companyText, intro)
+})
+
+test('company introductions are separated when headed, named on their own line, or already stored', () => {
+  const jd = '岗位职责：维护岗位职责说明和研发平台。\n在 100-499 人团队协作。'
+  const intro = '示例研发公司成立于2020年，致力于企业软件服务。'
+  const parsed = formatBossDescription(jd + '\n' + intro, intro, '示例研发公司')
+  assert.equal(parsed.jobSections.length, 1)
+  assert.equal(parsed.companySections.length, 1)
+  assert.equal(parsed.jobText, jd)
+  assert.equal(parsed.companyText, intro)
+
+  const leading = formatBossDescription('公司简介：' + intro + '\n\n' + jd, null)
+  assert.equal(leading.jobText, jd)
+  assert.equal(leading.companySections.length, 1)
+
+  const stored = formatBossDescription(null, intro, '示例研发公司')
+  assert.deepEqual(stored.jobSections, [])
+  assert.equal(stored.companyText, intro)
+  assert.deepEqual(formatBossDescription(jd, null, null).companySections, [])
+})
 
 test('processing date presets use inclusive dates on the browser calendar', () => {
   const date = new Date(2026, 10, 19, 0, 5)
@@ -80,6 +117,30 @@ test('record details render saved content with no external navigation or embedde
     assert.doesNotMatch(markup, /<[^>]*\s(?:href|src|srcdoc)=/i)
     assert.match(markup, /复制公司与岗位/)
     assert.match(markup, /复制原链接/)
+  } finally {
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})
+
+test('record details render the role and company in separate sections', () => {
+  const React = require('react')
+  const { renderToStaticMarkup } = require('react-dom/server')
+  const Component = load('app/boss/analysis/BossJobRecordDialog.tsx').default
+  const previous = globalThis.document
+  globalThis.document = { body: {} }
+  try {
+    const markup = renderToStaticMarkup(React.createElement(Component, {
+      job: { id: 1, jobName: '模拟开发岗位', jobDescription: '岗位职责：1. 负责接口研发；2. 负责测试。\n公司简介：这是一家示例公司。' },
+      onClose() {},
+    }))
+    const job = markup.match(/<section aria-labelledby="boss-record-jd">(.*?)<\/section>/s)[1]
+    const company = markup.match(/<section aria-labelledby="boss-record-company">(.*?)<\/section>/s)[1]
+    assert.match(job, /<h4[^>]+>岗位职责<\/h4>/)
+    assert.match(job, /<ol[^>]+>.*?<li value="1"[^>]*>负责接口研发；<\/li>/s)
+    assert.doesNotMatch(job, /这是一家示例公司/)
+    assert.match(company, /这是一家示例公司/)
+    assert.match(company, /复制公司简介/)
   } finally {
     if (previous === undefined) delete globalThis.document
     else globalThis.document = previous

@@ -4,7 +4,29 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Copy, FileText, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { formatBossDescription, type BossDescriptionSection } from '@/lib/boss-description'
 import { bossHistorySearchText, bossHistoryUrl, formatBossProcessingTime, type BossHistoryJob } from '@/lib/boss-history'
+
+function DescriptionSections({ sections, heading }: { sections: BossDescriptionSection[]; heading?: string }) {
+  return <div className="divide-y divide-border/60 rounded-xl border bg-card">
+    {sections.map((section, index) => (
+      <div key={index} className="space-y-3 px-4 py-4 sm:px-5">
+        {section.heading && section.heading !== heading && (
+          <h4 className="border-l-2 border-primary/65 pl-2.5 text-sm font-semibold leading-6">{section.heading}</h4>
+        )}
+        <div className="max-w-[48rem] space-y-2.5 break-words text-sm leading-7 sm:text-[15px]">
+          {section.blocks.map((block, blockIndex) => {
+            if (block.kind === 'paragraph') return <p key={blockIndex} className="whitespace-pre-wrap">{block.text}</p>
+            const List = block.ordered ? 'ol' : 'ul'
+            return <List key={blockIndex} className={(block.ordered ? 'list-decimal' : 'list-disc') + ' space-y-1.5 pl-6 marker:font-medium marker:text-primary'}>
+              {block.items.map((item, itemIndex) => <li key={itemIndex} value={item.number} className="whitespace-pre-wrap pl-1">{item.text}</li>)}
+            </List>
+          })}
+        </div>
+      </div>
+    ))}
+  </div>
+}
 
 /** A local snapshot: opening a record must never contact Boss or launch another tab. */
 export default function BossJobRecordDialog({ job, onClose }: { job: BossHistoryJob; onClose: () => void }) {
@@ -14,6 +36,7 @@ export default function BossJobRecordDialog({ job, onClose }: { job: BossHistory
   const [notice, setNotice] = useState('')
   const searchText = bossHistorySearchText(job)
   const originalUrl = bossHistoryUrl(job.jobUrl)
+  const description = formatBossDescription(job.jobDescription, job.introduce, job.companyName)
 
   useEffect(() => {
     const element = dialog.current
@@ -54,12 +77,33 @@ export default function BossJobRecordDialog({ job, onClose }: { job: BossHistory
           ['经验', job.experience], ['学历', job.degree], ['投递状态', job.deliveryStatus],
         ].map(([label, value]) => <div key={label}><dt className="mb-1 text-xs text-muted-foreground">{label}</dt><dd className="break-words text-sm font-medium">{value || '未记录'}</dd></div>)}
       </dl>
-      <section aria-labelledby="boss-record-jd"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 id="boss-record-jd" className="font-semibold">已保存的岗位职责与要求</h3><Button type="button" size="sm" variant="outline" disabled={!job.jobDescription?.trim()} onClick={() => void copy(job.jobDescription || '', '岗位描述')}><Copy className="h-3.5 w-3.5" />复制岗位描述</Button></div><p className="whitespace-pre-wrap break-words rounded-xl border p-4 text-sm leading-7">{job.jobDescription?.trim() || '这条历史记录未保存完整岗位描述。可以复制公司与岗位名称，到已登录的 Boss 中手动搜索。'}</p></section>
+      <section aria-labelledby="boss-record-jd">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 id="boss-record-jd" className="font-semibold">已保存的岗位职责与要求</h3>
+          <Button type="button" size="sm" variant="outline" disabled={!description.jobText.trim()} onClick={() => void copy(description.jobText, '岗位描述')}>
+            <Copy className="h-3.5 w-3.5" />复制岗位描述
+          </Button>
+        </div>
+        {description.jobSections.length ? <DescriptionSections sections={description.jobSections} /> : (
+          <p className="rounded-xl border p-4 text-sm leading-7 text-muted-foreground">这条历史记录未保存完整岗位描述。可以复制公司与岗位名称，到已登录的 Boss 中手动搜索。</p>
+        )}
+      </section>
+      {description.companySections.length > 0 && (
+        <section aria-labelledby="boss-record-company">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 id="boss-record-company" className="font-semibold">公司简介</h3>
+            <Button type="button" size="sm" variant="outline" onClick={() => void copy(description.companyText, '公司简介')}>
+              <Copy className="h-3.5 w-3.5" />复制公司简介
+            </Button>
+          </div>
+          <DescriptionSections sections={description.companySections} heading="公司简介" />
+        </section>
+      )}
       <details className="rounded-xl border p-4"><summary className="cursor-pointer text-sm font-medium">公司与招聘信息</summary><dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">{[
         ['HR', [job.hrName, job.hrPosition].filter(Boolean).join(' · ')], ['HR 活跃', job.hrActiveStatus],
         ['招聘状态', job.recruitmentStatus], ['行业', job.industry], ['公司规模', job.companyScale], ['融资阶段', job.financingStage],
         ['公司地址', job.companyAddress], ['处理时间', formatBossProcessingTime(job.processedAt)],
-      ].map(([label, value]) => <div key={label}><dt className="mb-1 text-xs text-muted-foreground">{label}</dt><dd className="break-words">{value || '未记录'}</dd></div>)}</dl>{job.introduce && <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-7">{job.introduce}</p>}</details>
+      ].map(([label, value]) => <div key={label}><dt className="mb-1 text-xs text-muted-foreground">{label}</dt><dd className="break-words">{value || '未记录'}</dd></div>)}</dl></details>
       <section className="space-y-3 rounded-xl border bg-muted/20 p-4" aria-labelledby="boss-record-search"><h3 id="boss-record-search" className="text-sm font-semibold">需要查看最新岗位？</h3><p className="text-xs leading-6 text-muted-foreground">复制公司与岗位名称，到你已登录的 Boss 中手动搜索。历史网址可能已失效，或依赖采集时的登录与访问状态。</p><div className="flex flex-wrap items-center gap-3"><p className="min-w-0 flex-1 break-words text-sm">{searchText || '公司与岗位名称未记录'}</p><Button type="button" size="sm" variant="outline" disabled={!searchText} onClick={() => void copy(searchText, '公司与岗位名称')}><Copy className="h-3.5 w-3.5" />复制公司与岗位</Button></div><details><summary className="cursor-pointer text-xs text-muted-foreground">历史原链接（仅复制）</summary><p className="mt-2 text-xs leading-6 text-muted-foreground">此处不会自动打开、刷新或检测原站。手动访问如出现安全验证或反复跳转，请关闭该标签页，避免反复刷新。</p><p className="mt-2 select-all break-all rounded-lg border bg-card p-3 font-mono text-xs">{job.jobUrl || '未保存原链接'}</p><Button type="button" size="sm" variant="outline" className="mt-2" disabled={!originalUrl} onClick={() => originalUrl && void copy(originalUrl, '历史原链接')}>复制原链接</Button>{job.jobUrl && !originalUrl && <p className="mt-2 text-xs text-amber-700">原地址不是有效的 Boss 岗位详情网址，已禁用复制。</p>}</details></section>
       {copyValue && <label className="block text-xs text-muted-foreground">待复制内容<textarea ref={copyArea} aria-label="待复制内容" readOnly rows={2} value={copyValue} className="mt-2 block w-full rounded-lg border bg-background p-3 text-sm text-foreground" /></label>}
       {notice && <p role="status" className="text-sm text-primary">{notice}</p>}
