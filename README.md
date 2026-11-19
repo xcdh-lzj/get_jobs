@@ -1,128 +1,150 @@
-# Get Jobs 二次开发版
+# Get Jobs · Boss 多账号工作台
 
-本项目基于 **[loks666/get_jobs](https://github.com/loks666/get_jobs)** 进行二次开发，感谢原作者和贡献者。此仓库为独立维护的修改版本，与上游官方发布相区分。
+## 项目介绍
 
-保留上游完整 [LICENSE](LICENSE) 和版权声明，继续遵守 **PolyForm Noncommercial License 1.0.0**。本项目仅供非商业用途；公开源码不代表获得商业授权。
+本项目基于 [loks666/get_jobs](https://github.com/loks666/get_jobs) 二次开发，帮助求职者在本机管理 Boss 直聘的岗位筛选、投递和结果记录。可以先试审岗位，查看哪些职责符合自己的方向，再决定是否开始正式投递。
 
-## 主要改进
+本版本的增强集中在 Boss 直聘。猎聘、前程无忧和智联招聘沿用上游流程。
 
-- Boss 多账号独立配置、登录资料隔离，以及按顺序执行的账号队列。
-- 识别当日沟通上限后结束当前账号；处理剩余沟通次数提醒。
-- 识别“工作经历不匹配”沟通拦截，记录未投递原因并继续后续岗位。
-- 同账号按顺序处理多个城市，支持低产出判断和切换阈值。
-- 从目标方向和简历生成精投配置，结合标题初筛与岗位职责语义审核。
-- AI 审核缓存与调用预算控制，减少重复分析和 Token 消耗。
-- 可自定义薪资区间、HR 活跃天数，支持账号间复制黑名单。
-- 管理页实时进度、分区布局、可收起侧边栏、统一保存入口和本地岗位详情。
-- 运行日志支持关键记录筛选、提醒分级、搜索、重复提示折叠和暂停自动跟随。
-- 修复分析图表随账号轮询反复重绘的问题。
+## 功能特性
 
-这批增强主要面向 Boss；其他平台保留原有代码，实际可用性取决于对应平台页面和上游维护情况。
+| 功能 | 用途 |
+| --- | --- |
+| 多账号与多城市 | 各 Boss 账号独立登录和配置。可一键同步账号配置，按顺序运行账号队列，并在一个账号内按设定顺序处理多个城市。 |
+| 按职责精投 | 先核对薪资、经验和 HR 活跃等条件，再按职位描述（JD）审核职责。方向可手动填写，也可从简历经历中生成建议。 |
+| 试审与费用控制 | 用示例、历史或新采集的岗位试审。岗位职责审核可复用缓存，并设置每次任务的 Token 预算。 |
+| 投递进度与记录 | 工作台显示当前账号、城市和处理结果。达到平台当天沟通上限时结束当前账号，队列可继续下一个账号。 |
+| 岗位分析与导出 | 按处理日期和岗位条件筛选，按处理时间或月薪排序。支持查看已保存的岗位描述和公司简介，并按当前筛选和排序导出 CSV。 |
+
+## 界面截图与演示
+
+以下截图来自使用模拟账号和模拟岗位的管理页。
+
+**投递工作台**展示账号切换、城市进度、筛选配置和运行日志。
+
+![Boss 投递工作台演示](docs/public/images/boss-workbench-demo.png)
+
+**投递分析**展示日期筛选、岗位状态、处理时间和 CSV 导出入口。
+
+![Boss 投递分析演示](docs/public/images/boss-analysis-demo.png)
 
 ## 环境要求
 
-- JDK 21，并配置 `JAVA_HOME`。
-- Node.js 22 或 24、pnpm 11。
-- Python 3.11 或更新版本，用于从公开数据初始化空白数据库。
-- Google Chrome 正式版、Git。
+| 依赖 | 要求 |
+| --- | --- |
+| 运行环境 | Windows、macOS 或 Linux 桌面环境，安装 Chrome 桌面版，用于扫码登录和查看招聘页面。 |
+| Java | JDK 21，`JAVA_HOME` 指向 JDK 安装目录。 |
+| 前端 | Node.js 24（含 npm）和 pnpm 11。 |
+| 数据库初始化 | Python 3.11 或更新版本，用公开表结构生成本地 SQLite 数据库。 |
+| 源码 | Git。项目自带 Gradle Wrapper。 |
 
-浏览器默认以**有窗口模式**运行，扫码登录在独立浏览器资料目录内完成。程序启动后，由使用者在管理页面主动开始投递。
+## 安装部署
 
-## 从源码运行
+在 GitHub 本仓库的 **Code** 菜单复制地址，用 Git 克隆仓库并进入包含 `gradlew` 的目录。首次安装项目依赖前准备 pnpm。
 
-先克隆本仓库并进入项目根目录。首次使用安装 pnpm：
-
-```text
+```bash
 npm install --global pnpm@11
 ```
 
-macOS / Linux：
+首次启动需要初始化数据库。已有 `db/getjobs.db` 时从安装前端依赖那一步开始。
+
+### macOS / Linux
 
 ```bash
 python3 scripts/init_database.py
 pnpm --dir front install --frozen-lockfile
-pnpm --dir front build:prod
 sh ./gradlew bootRun
 ```
 
-Windows PowerShell：
+### Windows PowerShell
 
 ```powershell
 py -3 scripts/init_database.py
 pnpm --dir front install --frozen-lockfile
-pnpm --dir front build:prod
 .\gradlew.bat bootRun
 ```
 
-`init_database.py` 只用仓库中的公开表结构和城市、薪资等选项创建 `db/getjobs.db`，拒绝覆盖已有数据库。已有数据库的安装无需重复初始化。首次构建需要下载 Gradle、Java 和浏览器驱动依赖。
+Gradle 会准备浏览器驱动、构建管理页并启动服务。首次构建需要联网下载依赖。启动成功后打开 [本地管理页](http://localhost:9527)。常规使用由一个进程提供管理页和 API。停止程序可在启动终端按 `Ctrl+C`。
 
-启动成功后打开 **http://localhost:9527**。前端已复制到后端静态资源目录，常规使用无需再运行一个前端开发服务器。
+## 配置说明
 
-1. 设置自己的城市、关键词、薪资、HR 活跃范围和精投方向。
-2. 在 Boss 页面打开对应账号浏览器，扫码登录并确认保存登录；多账号分别操作。
-3. 使用 AI 审核、简历解析或 AI 招呼语前，在“服务与通知”填写自己的 API 地址、密钥和模型。仓库未提供可用的 API 密钥。
-4. 填写自己的个人介绍，需要时上传自己的简历；保存全部修改后再开始投递。
-5. 停止任务使用管理页停止按钮，退出程序在启动终端按 `Ctrl+C`。
+### Boss 账号和 AI
 
-默认关键词、个人介绍、黑名单和服务凭据均为空，图片简历发送及重复沟通默认关闭。精投方向中的通用示例可自行修改。AI 审核和 AI 招呼语分别配置；未配置服务时应先关闭相关功能。
+| 配置项 | 设置位置 |
+| --- | --- |
+| 搜索关键词、城市、薪资与 HR 活跃 | 当前 Boss 账号的「投递筛选」。 |
+| 职位方向、目标职责与审核预算 | 当前 Boss 账号的「精准审核」。页面提供可替换的通用目标示例。 |
+| 首次沟通文案、个人经历与图片简历 | 当前 Boss 账号的「招呼语与简历」。 |
+| AI 招呼语开关 | 当前 Boss 账号的「精准审核 → 通过审核后，使用 AI 生成招呼语」。 |
+| AI 服务地址、API Key 和模型 | 「服务与通知」。需要试审、简历方向分析或 AI 招呼语时填写，服务须提供兼容的 API。 |
 
-## 修改与测试
+开启「正式投递启用精准审核」后，候选岗位按当前账号的目标职责审核。使用普通投递与固定招呼语时，可关闭精准审核和 AI 招呼语两项开关。审核预算覆盖岗位职责审核，简历分析和招呼语各自消耗模型用量。
 
-```text
-pnpm --dir front test:progress
-python3 -m unittest discover -s scripts -p "test_*.py" -v
-```
+「公共 AI 资料」里的介绍和提示词用于默认 Boss 账号首次初始化。各账号的个人资料随工作台的「保存全部修改」保存。
 
-后端测试与打包：
+### 本地数据库与个人资料
 
-```bash
-# macOS / Linux
-sh ./gradlew test bootJar -x buildFrontend
-```
+| 本地位置 | 保存内容 |
+| --- | --- |
+| `db/getjobs.db` | 账号配置、服务凭据、岗位历史、审核结果与缓存 |
+| `browser-accounts/`、`browser-data/`、`cookies/` | 浏览器资料和登录状态 |
+| `data/`、`target/` | 上传的简历图片、运行日志和构建产物 |
+| `config/application-local.yaml`、`config/page-config.local.json`、`.env` | 本机配置与可选的初始化资料 |
 
-```powershell
-# Windows
-.\gradlew.bat test bootJar -x buildFrontend
-```
+这些路径已加入 Git 忽略规则。请将数据库、密钥、简历、Cookie、运行截图与日志留在本机。日常通过管理页保存设置即可。
 
-修改前端后重新运行 `pnpm --dir front build:prod`。调试管理页可在 `front` 内执行 `pnpm dev`；API 默认连接本地 9527 端口。
-
-## 公开仓库与本地资料
-
-首次公开发布采用全新的提交历史，历史开发分支与回滚点保留在维护者本机。源码不包含原维护环境的数据库、浏览器登录态、Cookie、简历、投递记录、AI 缓存、日志、截图或旧 Git 历史。测试中的 HR 活跃样本为合成数据。
-
-文档图片只保留与上游公开文件哈希一致的素材，不包含本机运行截图。
-
-使用后生成的 `db/`、`data/`、`browser-data/`、`browser-accounts/`、`cookies/`、`target/` 和 `.env` 等属于本地资料，已加入忽略规则。环境变量文件仅保留在本地；服务凭据通过管理页面设置并保存在数据库中。
-
-## 配置如何保存
-
-| 内容 | 存放位置 | 提交 Git |
-| --- | --- | --- |
-| 通用程序配置与空白初始值 | `src/main/resources/application.yaml`、`defaults/page-config.json` | 是 |
-| 个人初始化资料 | `config/page-config.local.json` | 否 |
-| 本机程序配置 | `config/application-local.yaml` | 否 |
-| 本机 Gradle 代理 | `config/gradle-local.properties` | 否 |
-| 管理页面保存的账号、筛选、介绍、服务凭据 | `db/getjobs.db` | 否 |
-| 登录态、简历、投递历史与日志 | 各运行目录 | 否 |
-
-日常通过管理页面保存配置即可，数据库是实际运行配置的来源。可选的 `config/application-local.yaml` 会由程序启动时读取；本机 Gradle 配置支持 `systemProp.*`，命令行 `-D` 参数优先。
-
-若需要给全新数据库预置自己的页面设置，可复制通用默认 JSON 为 `config/page-config.local.json` 并编辑，再在本机 `config/application-local.yaml` 中指定：
+需要给空白数据库预置页面配置时，可以把 [通用默认配置](src/main/resources/defaults/page-config.json) 复制为 `config/page-config.local.json`，再在 `config/application-local.yaml` 指定该文件。
 
 ```yaml
 getjobs:
   defaults-file: ./config/page-config.local.json
 ```
 
-个人初始化文件只对首次初始化的空白数据库生效，已保存的页面配置不受覆盖；无需在数据库和 JSON 中重复维护日常设置。
+## 使用教程
 
-提交前执行隐私检查：
+1. **登录账号。** 在「账号与队列」选择或新增账号，点击「打开该账号浏览器登录」。扫码后点击「确认并保存登录」。多个账号分别完成登录。
+2. **填写投递条件。** 在「投递筛选」填写关键词和城市，再设置薪资、学历、经验与 HR 活跃。多城市按你的顺序执行，可在此处设定候选减少时的切换阈值。
+3. **确定方向和招呼语。** 在「精准审核」填写目标岗位主要职责，也可上传简历生成方向建议并检查后采用。在「招呼语与简历」填写首次沟通文案，然后点「保存全部修改」。
+4. **先试看筛选结果。** 打开「精准审核 → 试审与记录」，可用「试审 8 个示例（不投递）」验证方向。要核对真实候选岗位，先登录并保存设置，再点「采集并审核（不投递）」。
+5. **启动投递。** 单账号点击「开始投递」。多账号在「账号与队列」排好顺序，再点击「启动账号队列」。
+6. **查看和导出结果。** 在「任务概览」看实时进度与日志。到「投递分析」可以按日期筛选，查看每条记录的处理状态及原因，或导出 CSV。
 
-```text
+## 常见问题
+
+**管理页打不开怎么办？** 从项目根目录启动，等终端显示服务启动完成后访问 `http://localhost:9527`。如果提示端口占用，先在原启动终端停止已运行的 Get Jobs 实例。
+
+**昨天的记录在哪里？** 「投递分析」默认选中「今天」，按处理时间最新优先。点「昨天」查看昨日记录，或点「清除日期」后查询更早的记录。
+
+**为什么填写了个人介绍，首次沟通仍然是固定文案？** AI 招呼语关闭时，程序使用当前账号的「自定义打招呼语」。要生成文案，请在该账号的「精准审核」勾选「通过审核后，使用 AI 生成招呼语」并保存。
+
+**试审或简历分析调用失败怎么办？** 在「服务与通知」确认 API 地址、密钥和模型，然后再试。模型用量和计费以所选服务为准。
+
+**更新源码后页面还是旧版怎么办？** macOS / Linux 用 `sh ./gradlew buildFrontend -PrebuildFrontend` 重新构建管理页，Windows PowerShell 用 `.\gradlew.bat buildFrontend -PrebuildFrontend`。之后刷新管理页。
+
+<details>
+<summary>开发测试与提交检查</summary>
+
+```bash
+pnpm --dir front test:progress
+python3 -m unittest discover -s scripts -p "test_*.py"
+sh ./gradlew test
 python3 scripts/check_publication.py
 ```
 
-检查针对当前暂存区，包括凭据、本机身份、路径、未批准的二进制文件和运行数据；扫描报告写入已忽略的 `target/privacy-audit.json`，只列路径与规则名。发布时仅推送公开分支，不推送本机备份标签或历史开发分支。
+Windows 下用 `py -3` 运行 Python 命令，用 `.\gradlew.bat test` 运行后端测试。用 `git config core.hooksPath .githooks` 可启用仓库的 Git 检查。
 
-可用 `git config core.hooksPath .githooks` 启用提交前检查和中文提交格式。维护者本机还可将 `getjobs.publicRoot` 配置为公开历史的根提交，使推送钩子拒绝包含旧私密历史的分支或标签。
+</details>
+
+## 更新日志
+
+### 2026-11-19
+
+- 新增账号间一键同步全部配置，完善多账号工作台。
+- 岗位历史支持处理日期快捷筛选、时间和薪资排序、实时更新与 CSV 导出。
+- 改善职位描述排版，独立显示公司简介。
+- 适配已沟通会话中的「沟通新职位」弹窗，并按当前账号的重复沟通配置处理。
+- 将 AI 招呼语开关统一放在各账号的「精准审核」中。
+
+## 许可证
+
+感谢 [loks666/get_jobs](https://github.com/loks666/get_jobs) 的作者和贡献者。二次开发版沿用上游的 **PolyForm Noncommercial License 1.0.0** 与版权声明。非商业使用、修改和分发的条款见 [LICENSE](LICENSE)。

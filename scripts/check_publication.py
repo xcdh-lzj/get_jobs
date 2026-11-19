@@ -95,6 +95,7 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     files = staged_files(root)
     needles, identities = share.private_needles(root), private_identities(root)
+    # The manifest pins upstream public files and reviewed screenshots of synthetic data.
     approved = json.loads((root / 'scripts/public-assets.sha256.json').read_text())
     findings: list[dict[str, str]] = []
     for name, data in files.items():
@@ -108,7 +109,7 @@ def main() -> None:
     if b'https://github.com/loks666/get_jobs' not in files.get('README.md', b''):
         findings.append({'path': 'README.md', 'rule': 'missing-upstream-attribution'})
     report = {'result': 'passed' if not findings else 'failed', 'files': len(files),
-              'approvedUpstreamBinaries': len(approved), 'findings': findings,
+              'approvedPublicBinaries': len(approved), 'findings': findings,
               'manifest': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
     share.write_json(root / 'target/privacy-audit.json', report)
     print(json.dumps({key: value for key, value in report.items() if key != 'manifest'}, ensure_ascii=False))
