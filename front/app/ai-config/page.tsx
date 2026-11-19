@@ -16,89 +16,32 @@ export default function AiConfigPage() {
   })
 
   const [loading, setLoading] = useState(false)
-  // 是否启用AI（映射 boss_config.enable_ai）
-  const [enableAi, setEnableAi] = useState<number>(0)
 
-  // 加载AI配置
   useEffect(() => {
-    fetchAiConfig()
-    fetchEnableAi()
-  }, [])
-
-  const fetchAiConfig = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/ai/config`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      const result = await response.json()
-      if (result.success && result.data) {
-        setAiConfig({
-          introduce: result.data.introduce || '',
-          prompt: result.data.prompt || '',
+    async function fetchAiConfig() {
+      try {
+        const response = await fetch(`${API_BASE}/api/ai/config`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
         })
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+        const result = await response.json()
+        if (result.success && result.data) {
+          setAiConfig({
+            introduce: result.data.introduce || '',
+            prompt: result.data.prompt || '',
+          })
+        }
+      } catch (error) {
+        console.error('加载AI配置失败:', error)
       }
-    } catch (error) {
-      console.error('加载AI配置失败:', error)
-      // 如果加载失败，使用默认值，不影响用户使用
-      console.log('使用默认配置')
     }
-  }
-
-  // 加载 boss_config 的 enable_ai 字段
-  const fetchEnableAi = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/boss/config`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      const result = await response.json()
-      const raw = result?.config?.enableAi
-      const val = String(raw ?? '').trim().toLowerCase()
-      setEnableAi(val === '1' || val === 'true' || val === 'on' ? 1 : Number(raw) === 1 ? 1 : 0)
-    } catch (e) {
-      console.error('加载enable_ai失败:', e)
-    }
-  }
-
-  // 切换 AI 开关并保存到 boss_config
-  const toggleEnableAi = async () => {
-    try {
-      const next = enableAi ? 0 : 1
-      setEnableAi(next)
-      const response = await fetch(`${API_BASE}/api/boss/config`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ enableAi: next }),
-      })
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-      // 可选：校验返回体
-      // const updated = await response.json()
-    } catch (e) {
-      console.error('更新enable_ai失败:', e)
-      // 回滚
-      setEnableAi((prev) => (prev ? 0 : 1))
-      alert('切换失败，请检查后端服务连接')
-    }
-  }
+    void fetchAiConfig()
+  }, [])
 
   const handleSave = async () => {
     setLoading(true)
@@ -132,7 +75,7 @@ export default function AiConfigPage() {
       <PageHeader
         icon={<BiBrain className="text-2xl" />}
         title="公共 AI 资料"
-        subtitle="配置公共技能介绍与提示词；Boss 账号的专属资料在投递工作台中管理。"
+        subtitle="这里保存的介绍和提示词供默认 Boss 账号首次初始化时使用。"
         iconClass="text-white"
         accentBgClass="bg-purple-500"
         actions={
@@ -151,26 +94,12 @@ export default function AiConfigPage() {
       <div className="space-y-6">
         {/* AI配置 */}
         <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <div className="min-w-0 space-y-2">
-              <CardTitle className="flex items-center gap-2">
-                <BiBrain className="text-primary" />
-                AI配置
-              </CardTitle>
-              <CardDescription>配置AI相关的技能介绍和提示词，用于生成个性化求职内容</CardDescription>
-            </div>
-            <div className="flex items-center gap-2"><span className="instant-badge">默认账号开关 · 即时生效</span>
-              <button
-                type="button"
-                aria-label="AI启用开关"
-                onClick={toggleEnableAi}
-                className={`relative inline-flex h-7 w-14 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400/40 border border-white/30 shadow-[inset_0_1px_0_rgba(255,255,255,.25)] ${enableAi ? 'bg-emerald-500/80 hover:bg-emerald-500' : 'bg-slate-300 hover:bg-slate-400 dark:bg-slate-600'}`}
-              >
-                <span
-                  className={`absolute top-1 left-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${enableAi ? 'translate-x-7' : 'translate-x-0'}`}
-                />
-              </button>
-            </div>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BiBrain className="text-primary" />
+              技能介绍与提示词
+            </CardTitle>
+            <CardDescription>各 Boss 账号可在「精准审核」中单独设置 AI 招呼语开关。</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-5 lg:grid-cols-2">
@@ -222,10 +151,6 @@ export default function AiConfigPage() {
                   <li className="flex items-start gap-2">
                     <span className="text-primary mt-0.5">•</span>
                     <span><strong>AI提示词：</strong>定义AI生成内容的模板和风格，支持使用 <code className="bg-muted px-1 py-0.5 rounded text-xs">%s</code> 作为占位符</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>效果：</strong>配置保存后，AI将在自动投递时使用这些信息生成匹配度高的求职沟通内容</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-primary mt-0.5">•</span>
