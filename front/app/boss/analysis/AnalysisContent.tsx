@@ -12,7 +12,10 @@ import { BiRefresh, BiReset, BiDownload, BiBarChart, BiLineChart, BiPieChart, Bi
 
 import BossJobHistoryTable from "./BossJobHistoryTable"
 import { bossUrl } from "@/lib/boss-accounts"
-import { BOSS_HISTORY_SORT_OPTIONS, type BossHistoryJob as BossJob, type BossHistorySort } from "@/lib/boss-history"
+import {
+  BOSS_HISTORY_SORT_OPTIONS, BOSS_PROCESSING_DATE_PRESETS, bossProcessingDateRange,
+  type BossHistoryJob as BossJob, type BossHistorySort, type BossProcessingDatePreset,
+} from "@/lib/boss-history"
 import { sameAnalysisChart, type AnalysisChartProps } from "@/lib/boss-analysis-chart"
 
 type NameValue = { name: string; value: number }
@@ -233,6 +236,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const [keyword, setKeyword] = useState("")
   const [processedFrom, setProcessedFrom] = useState("")
   const [processedTo, setProcessedTo] = useState("")
+  const [datePreset, setDatePreset] = useState<BossProcessingDatePreset | null>(null)
   const [sort, setSort] = useState<BossHistorySort>("RECORDED_DESC")
   const [filterHeadhunter, setFilterHeadhunter] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -254,6 +258,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
   const pageCount = Math.max(1, Math.ceil(total / size))
   const listError = errorUrl === listUrl
   const invalidDateRange = !!processedFrom && !!processedTo && processedFrom > processedTo
+  const hasProcessingDates = !!(processedFrom || processedTo || filterParams.has("processedFrom") || filterParams.has("processedTo"))
 
   const goToPage = (value: number) => {
     const next = Math.max(1, Math.min(value, pageCount))
@@ -269,6 +274,26 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
       if (value.trim()) params.set(key, value.trim())
     }
     setAppliedFilter(params.toString())
+    setDatePreset(null)
+    goToPage(1)
+  }
+
+  const applyDatePreset = (preset: BossProcessingDatePreset | null) => {
+    const [from, to] = preset ? bossProcessingDateRange(preset) : ["", ""]
+    setProcessedFrom(from)
+    setProcessedTo(to)
+    setDatePreset(preset)
+    setAppliedFilter(previous => {
+      const params = new URLSearchParams(previous)
+      if (preset) {
+        params.set("processedFrom", from)
+        params.set("processedTo", to)
+      } else {
+        params.delete("processedFrom")
+        params.delete("processedTo")
+      }
+      return params.toString()
+    })
     goToPage(1)
   }
 
@@ -282,6 +307,7 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
     setKeyword("")
     setProcessedFrom("")
     setProcessedTo("")
+    setDatePreset(null)
     setFilterHeadhunter(false)
     setAppliedFilter("")
     goToPage(1)
@@ -507,7 +533,19 @@ function AnalysisContent({ showHeader = false, accountId = 1, progressKey, progr
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-end gap-3">
+          <div role="group" aria-label="处理日期快捷筛选" className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-sm font-medium">快捷日期</span>
+            {BOSS_PROCESSING_DATE_PRESETS.map(preset => (
+              <Button key={preset.value} type="button" size="sm" aria-pressed={datePreset === preset.value}
+                variant={datePreset === preset.value ? "default" : "outline"} onClick={() => applyDatePreset(preset.value)}
+              >{preset.label}</Button>
+            ))}
+            <Button type="button" size="sm" variant="ghost" disabled={!hasProcessingDates} onClick={() => applyDatePreset(null)}>
+              清除日期
+            </Button>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-end gap-3">
             <div className="w-44 space-y-1.5">
               <Label htmlFor="boss-processed-from">处理起始日期</Label>
               <Input id="boss-processed-from" type="date" value={processedFrom}

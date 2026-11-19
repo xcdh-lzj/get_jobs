@@ -20,7 +20,23 @@ function load(sourcePath) {
   new Function('require', 'module', 'exports', code)(resolve, compiledModule, compiledModule.exports)
   return compiledModule.exports
 }
-const { bossHistoryUrl, bossHistorySearchText } = load('lib/boss-history.ts')
+const { bossHistoryUrl, bossHistorySearchText, bossProcessingDateRange } = load('lib/boss-history.ts')
+
+test('processing date presets use inclusive dates on the browser calendar', () => {
+  const date = new Date(2026, 10, 19, 0, 5)
+  assert.deepEqual(bossProcessingDateRange('today', date), ['2026-11-19', '2026-11-19'])
+  assert.deepEqual(bossProcessingDateRange('yesterday', date), ['2026-11-18', '2026-11-18'])
+  assert.deepEqual(bossProcessingDateRange('previousSevenDays', date), ['2026-11-12', '2026-11-18'])
+  assert.deepEqual(bossProcessingDateRange('previousMonth', date), ['2026-10-19', '2026-11-18'])
+  assert.deepEqual(bossProcessingDateRange('thisMonth', date), ['2026-11-01', '2026-11-19'])
+})
+
+test('processing date presets cross years and clamp previous-month dates at month end', () => {
+  assert.deepEqual(bossProcessingDateRange('previousSevenDays', new Date(2027, 0, 2)), ['2026-12-26', '2027-01-01'])
+  assert.deepEqual(bossProcessingDateRange('previousMonth', new Date(2027, 0, 1)), ['2026-12-01', '2026-12-31'])
+  assert.deepEqual(bossProcessingDateRange('previousMonth', new Date(2026, 2, 31)), ['2026-02-28', '2026-03-30'])
+  assert.deepEqual(bossProcessingDateRange('previousMonth', new Date(2028, 2, 31)), ['2028-02-29', '2028-03-30'])
+})
 
 test('history URL copying accepts only Boss job details and preserves original parameters', () => {
   for (const url of [
