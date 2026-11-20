@@ -44,10 +44,7 @@ public class ZhilianJobService implements JobPlatformService {
         try {
             // 浏览器可能已被手动关闭 / 崩溃，先确保可用，必要时重新拉起
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "检查浏览器状态..."));
-            playwrightManager.ensureReady();
-
-            // 获取智联招聘页面实例
-            Page page = playwrightManager.getZhilianPage();
+            Page page = playwrightManager.readyPlatform(PLATFORM, false);
             if (page == null) {
                 progressCallback.accept(JobProgressMessage.error(PLATFORM, "智联招聘页面未初始化"));
                 return;

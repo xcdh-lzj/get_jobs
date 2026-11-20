@@ -11,6 +11,7 @@ import { Copy, UserRound } from 'lucide-react'
 import { useWorkspaceEdits, useWorkspaceEditor } from '@/app/components/WorkspaceEdits'
 import { writeWorkspaceJson } from '@/lib/workspace-save'
 import { useBossFollowUp } from '@/lib/use-boss-follow-up'
+import BossInboxOverview from './BossInboxOverview'
 
 export default function AccountsWorkspace({ children }: {
   children: (id: number, queue: BossQueue | null, name: string, management: ReactNode, initialSection: string,
@@ -208,6 +209,7 @@ export default function AccountsWorkspace({ children }: {
     {message && <p role="status" className="rounded-lg border border-green-300 p-3 text-sm text-green-700">{message}</p>}
     {error && <p role="alert" className="rounded-lg border border-red-300 p-3 text-sm text-red-600">{error}</p>}
     {syncingConfigs && <p role="status" className="rounded-lg border p-3 text-sm text-muted-foreground">正在同步当前账号的全部配置…</p>}
+    <BossInboxOverview accounts={accounts} />
     {selectedAccount ? <div key={`${selected}:${configSyncVersion}`} inert={syncingConfigs || undefined}>{children(selected, queue, selectedAccount.name, management, configSyncVersion ? 'accounts' : 'overview', followUp)}</div> : <div className="rounded-xl border bg-card p-10 text-center text-sm text-muted-foreground">正在读取账号，请确认后端服务已启动。{error && <Button variant="outline" className="ml-3" onClick={() => void refresh()}>重新连接</Button>}</div>}
   </div>
 }

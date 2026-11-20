@@ -17,6 +17,7 @@ import java.net.URI;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -32,30 +33,36 @@ public class BossFollowUpWorker {
     private final BossFollowUpStore store;
     private final BossService bosses;
 
-    public record Result(String state, int checked, int confirmed, int unconfirmed, String message) {}
-    private enum Outcome { SKIPPED, ANSWERED, CONFIRMED, UNCONFIRMED }
+    public record Result(String state, int checked, int confirmed, int unconfirmed, int failed, String message) {}
+    public record Progress(int checked, int total, int confirmed, int unconfirmed, int failed,
+                           String message, String jobName, String level) {}
+    private enum Outcome { SKIPPED, ANSWERED, CONFIRMED, UNCONFIRMED, FAILED }
     private record Check(Outcome outcome, String reason) {}
     private static final class Attempt {
         boolean claimed;
         long clickedAt;
     }
 
-    public Result execute(Page listing, BossConfig config, Supplier<Boolean> stop, Boss.ProgressCallback progress) {
-        var policy = config.getFollowUpPolicy();
-        long now = System.currentTimeMillis();
-        var window = policy.window(now);
-        var candidates = store.candidates(window, policy.batchSize(), now);
-        if (candidates.isEmpty()) return new Result("completed", 0, 0, 0, "所选范围内暂无待核对的岗位，本轮未打开岗位会话");
+    public Result execute(Page listing, BossConfig config, BossFollowUpPolicy.Window window, Supplier<Boolean> stop,
+                          Consumer<Progress> progress) {
+        var candidates = store.candidates(window, System.currentTimeMillis());
+        int total = candidates.size();
+        if (total == 0) return new Result("completed", 0, 0, 0, 0, "所选投递日期暂无符合条件的待核对岗位");
         var companies = bosses.getBlackCompanies();
         var titles = bosses.getBlackJobs();
         var recruiters = bosses.getBlackRecruiters();
-        int checked = 0, confirmed = 0, unconfirmed = 0;
+        int checked = 0, confirmed = 0, unconfirmed = 0, failed = 0;
         String state = "completed";
         String notice = "";
-        progress.accept("从已投递记录核对 " + candidates.size() + " 个待检查岗位", 0, candidates.size());
+        progress.accept(new Progress(0, total, 0, 0, 0, "开始核对 " + total + " 个已投递岗位", null, "info"));
         for (Job job : candidates) {
             if (stop.get()) break;
-            progress.jobStarted(job.title(), job.company(), candidates.size());
+            if (listing.isClosed()) {
+                state = "failed";
+                notice = "Boss 浏览器已关闭";
+                break;
+            }
+            progress.accept(new Progress(checked, total, confirmed, unconfirmed, failed, "正在核对会话", job.title(), null));
             var attempt = new Attempt();
             Check result;
             try {
@@ -75,22 +82,31 @@ public class BossFollowUpWorker {
                 result = problem(attempt, "会话不可用或页面出现提示，已跳过");
             }
 
-            boolean sent = result.outcome() == Outcome.CONFIRMED;
-            if (sent) confirmed++;
+            if (result.outcome() == Outcome.CONFIRMED) confirmed++;
             if (result.outcome() == Outcome.UNCONFIRMED) unconfirmed++;
+            if (result.outcome() == Outcome.FAILED) failed++;
             if (stop.get() && result.outcome() == Outcome.SKIPPED) break;
             store.checked(job, result.outcome() == Outcome.ANSWERED);
-            progress.accept(result.reason(), null, null);
-            progress.jobProcessed(sent, ++checked, candidates.size());
+            String level = switch (result.outcome()) {
+                case CONFIRMED -> "success";
+                case FAILED -> "error";
+                case UNCONFIRMED -> "warning";
+                default -> "info";
+            };
+            progress.accept(new Progress(++checked, total, confirmed, unconfirmed, failed, result.reason(), job.title(), level));
             if (!state.equals("completed")) break;
         }
         if (stop.get()) {
             state = "stopped";
             notice = "定期跟进已停止";
         }
-        String summary = "共核对 " + checked + " 个岗位，确认补发 " + confirmed + " 条";
+        if ("completed".equals(state) && failed + unconfirmed > 0) {
+            state = checked == failed ? "failed" : "partial";
+        }
+        String summary = "共核对 " + checked + " / " + total + " 个岗位，确认跟进 " + confirmed + " 条";
         if (unconfirmed > 0) summary += "，" + unconfirmed + " 条发送未确认，已记录本次尝试";
-        return new Result(state, checked, confirmed, unconfirmed, notice.isBlank() ? summary : notice + "。 " + summary);
+        if (failed > 0) summary += "，" + failed + " 个岗位核对失败";
+        return new Result(state, checked, confirmed, unconfirmed, failed, notice.isBlank() ? summary : notice + "。 " + summary);
     }
 
     private Check check(Page listing, Job job, BossConfig config, BossFollowUpPolicy.Window window, Supplier<Boolean> stop, Attempt attempt) {
@@ -123,7 +139,7 @@ public class BossFollowUpWorker {
             if (stop.get()) return new Check(Outcome.SKIPPED, "任务已停止");
             if (chat == null) {
                 navigator.checkBlockingNotices();
-                return new Check(Outcome.SKIPPED, "原会话未就绪");
+                return new Check(Outcome.FAILED, "原会话未就绪");
             }
             Page page = chat.page();
             navigator.checkBlockingNotices();
@@ -158,7 +174,7 @@ public class BossFollowUpWorker {
             String message = config.randomRepeatChatMessage();
             if (message == null) return new Check(Outcome.SKIPPED, "未配置跟进文案");
             if (!navigator.fillMessage(chat.input(), message, stop, INTERACTION_TIMEOUT)) {
-                return new Check(Outcome.SKIPPED, "跟进文案未填入");
+                return stop.get() ? new Check(Outcome.SKIPPED, "任务已停止") : new Check(Outcome.FAILED, "跟进文案未填入");
             }
             Locator send = page.locator(SEND_BUTTON);
             if (send.count() != 1) return new Check(Outcome.SKIPPED, "无法定位唯一的发送按钮");
@@ -213,7 +229,7 @@ public class BossFollowUpWorker {
 
     private static Check problem(Attempt attempt, String reason) {
         return attempt.claimed ? new Check(Outcome.UNCONFIRMED, reason + "，已记录本次尝试")
-                : new Check(Outcome.SKIPPED, reason);
+                : new Check(Outcome.FAILED, reason);
     }
 
     private static boolean matches(Set<String> terms, String value) {

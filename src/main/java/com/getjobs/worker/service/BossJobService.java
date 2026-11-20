@@ -7,6 +7,7 @@ import com.getjobs.worker.boss.BossConfig;
 import com.getjobs.worker.boss.BossDailyLimitReachedException;
 import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.manager.BossBrowserSessions;
+import com.getjobs.worker.manager.BossInboxService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +30,7 @@ public class BossJobService implements JobPlatformService {
     private final BossAccountService accounts;
     private final BossBrowserSessions browsers;
     private final BossAccountLocks locks;
+    private final BossInboxService inbox;
     private final Map<Long, BossProgressTracker> progresses = new ConcurrentHashMap<>();
     private final String instanceId = UUID.randomUUID().toString();
     private long revision;
@@ -180,7 +182,8 @@ public class BossJobService implements JobPlatformService {
             if (accountId==1) { playwrightManager.pauseBossMonitoring(); monitoringPaused=true; }
             BossConfig config=configService.getBossConfig();
             Boss boss=bossProvider.getObject();
-            boss.setPage(page); boss.setConfig(config); boss.setShouldStopCallback(this::shouldStop);
+            boss.setConfig(config); boss.setShouldStopCallback(this::shouldStop);
+            boss.setBrowserCheckpoint(inbox::checkpoint);
             var profile=accounts.profile(accountId);
             AiEntity ai=new AiEntity(); ai.setIntroduce(profile.introduce()); ai.setPrompt(profile.prompt()); boss.setAiConfig(ai);
             boss.setProgressCallback(new Boss.ProgressCallback() {
@@ -202,7 +205,18 @@ public class BossJobService implements JobPlatformService {
             boss.prepare(); progress.running(id);
             emit(accountId,id,JobProgressMessage.info(PLATFORM,"review_only".equals(mode)?"开始岗位采集与审核（不投递）...":"开始投递任务..."));
             delivered=playwrightManager.callOnPlaywright(() -> {
-                try (var workerScope=BossAccountContext.use(accountId)) { return boss.execute(); }
+                try (var workerScope=BossAccountContext.use(accountId)) {
+                    if (shouldStop()) return 0;
+                    inbox.checkpoint();
+                    var taskPage = browsers.newTaskPage(page);
+                    try {
+                        boss.setPage(taskPage);
+                        return boss.execute();
+                    } finally {
+                        try { if (!taskPage.isClosed()) taskPage.close(); }
+                        catch (RuntimeException closed) { log.debug("无法关闭已结束的 Boss 搜索标签页", closed); }
+                    }
+                }
             });
             browsers.save(accountId);
         } catch (com.getjobs.worker.boss.review.BossReviewBudgetReachedException budget) {

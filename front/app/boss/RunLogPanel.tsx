@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { BiCheck, BiChevronDown, BiCopy, BiFile, BiPause, BiPlay, BiSearch, BiX } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -42,7 +42,15 @@ const LogEntry = memo(function LogEntry({ row }: { row: LogRow }) {
   )
 })
 
-function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?: number }) {
+function RunLogPanel({ logs, updatedAt, title = '运行日志', emptyMessage = '等待任务开始', emptyHint, retainedLimit, children }: {
+  logs: BossProgressLog[]
+  updatedAt?: number
+  title?: string
+  emptyMessage?: string
+  emptyHint?: string
+  retainedLimit?: number
+  children?: ReactNode
+}) {
   const [view, setView] = useState<LogView>('key')
   const [query, setQuery] = useState('')
   const [following, setFollowing] = useState(true)
@@ -101,15 +109,15 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
   }
 
   return (
-    <section aria-label="运行日志" className="overflow-hidden rounded-xl border bg-background">
+    <section aria-label={title} className="overflow-hidden rounded-xl border bg-background">
       <div className="space-y-3 border-b px-3 py-3 sm:px-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="rounded-lg bg-primary/10 p-1.5 text-primary"><BiFile className="h-4 w-4" /></span>
-            <h3 className="text-sm font-semibold">运行日志</h3>
+            <h3 className="text-sm font-semibold">{title}</h3>
             <span className="text-xs tabular-nums text-muted-foreground">{logs.length} 条</span>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             <Button type="button" variant="ghost" size="sm" aria-label={following ? '暂停日志自动跟随' : '恢复日志自动跟随'} aria-pressed={following}
               onClick={() => following ? pause() : setFollowing(true)} className={following ? 'text-primary' : 'text-muted-foreground'}>
               {following ? <BiPlay /> : <BiPause />}{following ? '自动跟随' : '已暂停'}
@@ -119,6 +127,7 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
             </Button>
           </div>
         </div>
+        {children}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div role="group" aria-label="日志显示范围" className="inline-flex max-w-full flex-wrap gap-0.5 rounded-lg bg-muted/70 p-0.5">
             {views.map(item => <button key={item.value} type="button" aria-pressed={view === item.value} onClick={() => setView(item.value)}
@@ -128,7 +137,7 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
           </div>
           <div className="relative min-w-0 flex-1 basis-40 sm:max-w-56">
             <BiSearch aria-hidden="true" className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input aria-label="搜索运行日志" placeholder="搜索岗位、原因或关键词" value={query} onChange={event => setQuery(event.target.value)} className="h-9 pl-8 pr-8 text-xs" />
+            <Input aria-label={`搜索${title}`} placeholder="搜索岗位、原因或关键词" value={query} onChange={event => setQuery(event.target.value)} className="h-9 pl-8 pr-8 text-xs" />
             {query && <button type="button" aria-label="清空日志搜索" onClick={() => setQuery('')} className="absolute right-1 top-1 rounded-md p-1.5 text-muted-foreground hover:bg-muted"><BiX className="h-4 w-4" /></button>}
           </div>
         </div>
@@ -145,8 +154,8 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
             {visible.length ? <ol className="divide-y divide-border/60 pb-10">{visible.map(row => <LogEntry key={row.id} row={row} />)}</ol>
               : <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-5 py-7 text-center">
                 <BiFile className="mb-1 h-7 w-7 text-muted-foreground/50" />
-                <p className="text-sm font-medium">{!logs.length ? '等待任务开始' : query ? '没有匹配的日志' : view === 'attention' ? '当前没有提醒或异常' : '暂无关键日志'}</p>
-                <p className="max-w-sm text-xs leading-5 text-muted-foreground">{!logs.length ? '任务开始后，这里会显示关键进展与每个岗位的处理结果。' : query ? '换一个关键词，或切换到全部日志查看。' : '可切换到全部日志查看当前保留的运行记录。'}</p>
+                <p className="text-sm font-medium">{!logs.length ? emptyMessage : query ? '没有匹配的日志' : view === 'attention' ? '当前没有提醒或异常' : '暂无关键日志'}</p>
+                {(logs.length > 0 || emptyHint) && <p className="max-w-sm text-xs leading-5 text-muted-foreground">{!logs.length ? emptyHint : query ? '换一个关键词，或切换到全部日志查看。' : '可切换到全部日志查看当前保留的运行记录。'}</p>}
               </div>}
           </div>
         </div>
@@ -155,7 +164,7 @@ function RunLogPanel({ logs, updatedAt }: { logs: BossProgressLog[]; updatedAt?:
         </div>}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t bg-muted/25 px-3 py-2 text-[11px] text-muted-foreground sm:px-4">
-        <span>显示 {visible.length} 条{folded > 0 ? ` · 已折叠 ${folded} 条连续重复提示` : ''}{logs.length >= 200 ? ' · 仅保留最近 200 条' : ''}</span>
+        <span>显示 {visible.length} 条{folded > 0 ? ` · 已折叠 ${folded} 条连续重复提示` : ''}{retainedLimit != null && logs.length >= retainedLimit ? ` · 仅保留最近 ${retainedLimit} 条` : ''}</span>
         <span role="status">{copyState === 'failed' ? '复制失败，可在全部日志中手动选择文本' : updatedAt && logs.length ? `更新于 ${logTime(updatedAt)}` : '等待实时更新'}</span>
       </div>
     </section>

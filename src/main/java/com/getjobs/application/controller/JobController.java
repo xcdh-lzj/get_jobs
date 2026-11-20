@@ -287,6 +287,7 @@ public class JobController {
         try {
             playwrightManager.trigger51jobLogin();
             response.put("success", true);
+            response.put("isLoggedIn", playwrightManager.isLoggedIn("51job"));
             response.put("message", "已打开51job登录页并尝试点击扫码登录，请扫码完成登录");
             return ResponseEntity.ok(response);
         } catch (Exception e) {

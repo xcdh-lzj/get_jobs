@@ -20,7 +20,8 @@ class BossFollowUpStoreTest {
     @TempDir Path directory;
     private JdbcTemplate jdbc;
     private BossFollowUpStore store;
-    private final BossFollowUpPolicy policy = new BossFollowUpPolicy(true, 48, 24, 20, null);
+    private final BossFollowUpPolicy policy = new BossFollowUpPolicy(false, null,
+            new BossFollowUpPolicy.DateSelection(List.of(0, 1, 2, 3, 4, 5, 6), List.of()));
 
     @BeforeEach void setup() {
         var source = new SQLiteDataSource();
@@ -39,29 +40,29 @@ class BossFollowUpStoreTest {
         add(1, "older", 80, "已投递");
         add(1, "last", 50, "已投递");
         add(1, "last", 50, "已投递");
-        add(1, "recent", 4, "已投递");
+        add(1, "future", -4, "已投递");
         add(1, "filtered", 72, "已过滤");
         add(2, "another", 72, "已投递");
         long now = System.currentTimeMillis();
         var window = policy.window(now);
         try (var scope = BossAccountContext.use(1)) {
-            var first = store.candidates(window, policy.batchSize(), now);
+            var first = store.candidates(window, now);
             assertEquals(List.of("last", "older"), first.stream().map(BossFollowUpStore.Job::id).toList());
             store.checked(first.getFirst(), false);
-            assertEquals("older", store.candidates(window, policy.batchSize(), now).getFirst().id());
+            assertEquals("older", store.candidates(window, now).getFirst().id());
             store.checked(first.getLast(), true);
-            assertEquals(List.of("last"), store.candidates(window, policy.batchSize(), now).stream().map(BossFollowUpStore.Job::id).toList());
+            assertEquals(List.of("last"), store.candidates(window, now).stream().map(BossFollowUpStore.Job::id).toList());
         }
     }
 
-    @Test void skipsJobsStillInCooldownBeforeApplyingTheNextBatchLimit() {
+    @Test void includesEveryCandidateAndKeepsConversationCooldownAcrossRuns() {
         long now = System.currentTimeMillis();
         long interval = BossFollowUpPolicy.MESSAGE_INTERVAL_MILLIS;
         for (int i = 1; i <= 25; i++) add(1, "job-" + i, 48L + i, "已投递");
 
-        var first = store.candidates(policy.window(now), policy.batchSize(), now);
-        assertEquals(20, first.size());
-        for (int i = 0; i < first.size(); i++) {
+        var first = store.candidates(policy.window(now), now);
+        assertEquals(25, first.size());
+        for (int i = 0; i < 20; i++) {
             var job = first.get(i);
             var key = "conversation:" + job.id();
             // 覆盖读取到的本人消息、点击后回执不明和平台确认发送三种来源。
@@ -74,19 +75,19 @@ class BossFollowUpStoreTest {
             }
         }
         long afterThreeMinutes = now + TimeUnit.MINUTES.toMillis(3);
-        var second = store.candidates(policy.window(afterThreeMinutes), policy.batchSize(), afterThreeMinutes);
+        var second = store.candidates(policy.window(afterThreeMinutes), afterThreeMinutes);
         assertEquals(List.of("job-21", "job-22", "job-23", "job-24", "job-25"), second.stream().map(BossFollowUpStore.Job::id).toList());
         for (var job : second) store.rememberLastSent(job, "conversation:" + job.id(), afterThreeMinutes);
-        assertTrue(store.candidates(policy.window(afterThreeMinutes), policy.batchSize(), afterThreeMinutes).isEmpty());
+        assertTrue(store.candidates(policy.window(afterThreeMinutes), afterThreeMinutes).isEmpty());
 
         long boundary = now + interval;
-        assertTrue(store.candidates(policy.window(boundary), policy.batchSize(), boundary).isEmpty());
-        assertEquals(20, store.candidates(policy.window(boundary + 1), policy.batchSize(), boundary + 1).size());
+        assertTrue(store.candidates(policy.window(boundary), boundary).isEmpty());
+        assertEquals(20, store.candidates(policy.window(boundary + 1), boundary + 1).size());
     }
 
     @Test void combinesCalendarDaysAtMidnightAndPrefersOriginalDeliveryTime() {
         var dates = new BossFollowUpPolicy.DateSelection(List.of(1, 2), List.of("2026-11-19", "2026-11-09"));
-        var calendar = new BossFollowUpPolicy(false, 48, 24, 20, dates);
+        var calendar = new BossFollowUpPolicy(false, null, dates);
         var now = LocalDateTime.parse("2026-11-20T00:02:00").atZone(ZoneId.systemDefault()).toInstant();
         addAt(1, "today", "2026-11-20T00:00:00", null, "已投递");
         addAt(1, "yesterday", "2026-11-19T23:59:59", null, "已投递");
@@ -95,19 +96,50 @@ class BossFollowUpStoreTest {
         addAt(1, "fixed", "2026-11-09T18:00:00", null, "已投递");
         addAt(1, "filtered", "2026-11-19T07:00:00", null, "已过滤");
         addAt(2, "other", "2026-11-19T09:00:00", null, "已投递");
-        var jobs = store.candidates(calendar.window(now.toEpochMilli()), calendar.batchSize(), now.toEpochMilli());
+        var jobs = store.candidates(calendar.window(now.toEpochMilli()), now.toEpochMilli());
         assertEquals(List.of("yesterday", "fallback", "fixed"), jobs.stream().map(BossFollowUpStore.Job::id).toList());
     }
 
     @Test void readsTheRunningRecordBeforeItHasAFinishTime() {
-        store.start(1);
-        var running = store.lastRun(1L);
+        long runId = store.startManual(1, List.of("2026-11-19"), System.currentTimeMillis());
+        var running = store.history(1, null).getFirst();
         assertEquals("running", running.state());
         assertNull(running.finishedAt());
         store = new BossFollowUpStore(jdbc);
         store.migrate();
-        assertEquals("interrupted", store.lastRun(1).state());
-        assertFalse(store.due(1, policy, System.currentTimeMillis()));
+        assertEquals("interrupted", store.history(1, null).getFirst().state());
+        assertEquals("warning", store.logs(1, runId).getLast().type());
+    }
+
+    @Test void keepsTwoClockSlotsAndDetailedHistoryWithoutDuplicateRuns() {
+        long now = System.currentTimeMillis();
+        var dates = List.of("2026-11-18", "2026-11-19");
+        store.enqueue(1, now, dates, now);
+        store.enqueue(1, now, dates, now + 5_000);
+        store.enqueue(1, now + 18_000_000, dates, now);
+        store.enqueue(2, now, dates, now);
+        assertEquals(3, store.pending().size());
+        assertEquals(2, store.history(1, null).size());
+        long runId = store.pending().getFirst().id();
+        assertTrue(store.startScheduled(runId, now));
+        assertFalse(store.startScheduled(runId, now));
+        store.progress(runId, 45, 1, 0, 0, 1, "error", "模拟会话无法打开");
+        store.finish(runId, "failed", 1, 0, 0, 1, "本轮提前结束");
+        assertEquals(4, store.logs(1, runId).size());
+        assertEquals("模拟会话无法打开", store.logs(1, runId).get(2).message());
+        assertTrue(store.logs(2, runId).isEmpty());
+        assertEquals("failed", store.history(1, store.history(1, null).getFirst().id()).getFirst().state());
+        assertEquals(dates, store.history(1, null).getFirst().dates());
+
+        jdbc.update("""
+                INSERT INTO boss_follow_up_run(account_id, started_at, state, message) VALUES(1, ?, 'completed', '历史轮次')
+                """, now - 18_000_000);
+        store.migrate();
+        store.migrate();
+        assertTrue(store.pending().isEmpty());
+        assertEquals(3, store.history(1, null).size());
+        assertEquals(1, store.history(1, null).stream().filter(run -> "legacy".equals(run.trigger())).count());
+        assertEquals(4, store.logs(1, runId).size());
     }
 
     @Test void rechecksLegacyFollowUpsAndKeepsAConversationCooldownAcrossRestarts() {
@@ -122,10 +154,10 @@ class BossFollowUpStoreTest {
         }
         store = new BossFollowUpStore(jdbc);
         store.migrate();
-        assertEquals(List.of("ineligible"), store.candidates(policy.window(now), policy.batchSize(), now).stream()
+        assertEquals(List.of("ineligible"), store.candidates(policy.window(now), now).stream()
                 .map(BossFollowUpStore.Job::id).toList());
         long next = now + interval + 1;
-        assertEquals(3, store.candidates(policy.window(next), policy.batchSize(), next).size());
+        assertEquals(3, store.candidates(policy.window(next), next).size());
         assertFalse(store.claim("attempted", now + interval));
         assertFalse(store.claim("confirmed", now + interval));
         assertTrue(store.claim("confirmed", now + interval + 1));
@@ -151,12 +183,12 @@ class BossFollowUpStoreTest {
         add(2, "other-account", 74, "已投递");
         long now = System.currentTimeMillis();
         var window = policy.window(now);
-        for (var job : store.candidates(window, policy.batchSize(), now)) {
+        for (var job : store.candidates(window, now)) {
             store.rememberLastSent(job, "shared-conversation", now);
         }
-        assertTrue(store.candidates(window, policy.batchSize(), now).isEmpty());
+        assertTrue(store.candidates(window, now).isEmpty());
         try (var scope = BossAccountContext.use(2)) {
-            assertEquals("other-account", store.candidates(window, policy.batchSize(), now).getFirst().id());
+            assertEquals("other-account", store.candidates(window, now).getFirst().id());
         }
     }
 

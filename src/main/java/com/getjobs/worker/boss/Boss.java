@@ -1,6 +1,7 @@
 package com.getjobs.worker.boss;
 
 import com.getjobs.application.entity.AiEntity;
+import com.getjobs.application.service.BossAccountContext;
 import com.getjobs.application.service.AiService;
 import com.getjobs.application.service.BossResumeImageService;
 import com.getjobs.application.service.BossService;
@@ -13,6 +14,7 @@ import com.getjobs.worker.utils.PlaywrightUtil;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Response;
 import com.microsoft.playwright.options.WaitForSelectorState;
 import lombok.RequiredArgsConstructor;
@@ -30,9 +32,12 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import static com.getjobs.worker.boss.Locators.*;
@@ -86,6 +91,8 @@ public class Boss {
     private ProgressCallback progressCallback;
     @Setter
     private Supplier<Boolean> shouldStopCallback;
+    @Setter
+    private Runnable browserCheckpoint;
 
     private final List<Job> resultList = new ArrayList<>();
 
@@ -378,7 +385,7 @@ public class Boss {
                         log.warn("【{}】滚动期间反复出现失效对象异常({}次)，停止继续加载", keyword, staleHits);
                         break;
                     }
-                    PlaywrightUtil.sleep(1);
+                    browserPause(1);
                 }
             }
             if (!loadedAll) {
@@ -396,7 +403,7 @@ public class Boss {
 
             // 2. 回到页面顶部
             page.evaluate("window.scrollTo(0, 0);");
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
 
             // 3. 逐个遍历所有岗位
             Locator cards = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
@@ -425,7 +432,7 @@ public class Boss {
                             // 第一个卡片默认展开不会触发请求：先切到第二个，再切回第一个，并在返回第一个时监听响应
                             final Locator secondCard = cards.nth(1);
                             secondCard.click();
-                            PlaywrightUtil.sleep(1);
+                            browserPause(1);
                             final Locator firstCard = cards.nth(0);
                             detailResp = page.waitForResponse(r -> {
                                 try {
@@ -444,7 +451,7 @@ public class Boss {
                         }
                     } catch (Throwable ignore) {
                     }
-                    PlaywrightUtil.sleep(1);
+                    browserPause(1);
 
                     // 统一从请求返回的 JSON 中获取数据并做过滤
                     String jobName = null;
@@ -579,7 +586,7 @@ public class Boss {
                 try {
                     if (i >= 5) {
                         page.evaluate("window.scrollBy(0, 140);");
-                        PlaywrightUtil.sleep(1);
+                        browserPause(1);
                     }
                 } catch (Throwable ignore) {}
 
@@ -822,7 +829,7 @@ public class Boss {
             input.fill("");
             // 逐字输入，模拟真人打字节奏；一次性 fill 在输入行为层面太干净了
             input.pressSequentially(keyword, new Locator.PressSequentiallyOptions().setDelay(140));
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
 
             Locator searchBtn = page.locator(HOME_SEARCH_BUTTON).first();
             if (searchBtn.count() > 0) {
@@ -895,7 +902,7 @@ public class Boss {
                 return;
             }
             log.warn("导航失败，1秒后重试一次：{} | {}", url, first.getMessage());
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
             try {
                 page.navigate(url, options);
             } catch (Exception second) {
@@ -949,7 +956,7 @@ public class Boss {
         } catch (Exception ignore) {
             // 等不到就算了，后面的 locator 调用自己有超时
         }
-        PlaywrightUtil.sleep(2);
+        browserPause(2);
     }
 
     /**
@@ -989,7 +996,7 @@ public class Boss {
                 log.warn("【{}】进入岗位列表失败（第{}/2次）：{}", keyword, attempt,
                         e.getMessage() == null ? e.toString() : e.getMessage().split("\n")[0]);
                 if (attempt < 2) {
-                    PlaywrightUtil.sleep(3);
+                    browserPause(3);
                 }
             }
         }
@@ -1011,7 +1018,7 @@ public class Boss {
                     }
                     throw e;
                 }
-                PlaywrightUtil.sleep(1);
+                browserPause(1);
             }
         }
         return 0;
@@ -1163,7 +1170,11 @@ public class Boss {
             }
             if(reviewStopped())return;
             if(!complete.isEmpty())progressCallback.accept("核对 "+complete.size()+" 个完整岗位，符合本地条件后再进行职责审核",null,null);
-            reviews.analyze(reviewRunId,reviewContext,complete,this::reviewStopped,result->decisions.put(result.job().key(),result));
+            // 审核只读写本地数据并等待模型，不占用浏览器的消息事件循环。
+            whileMonitoring(() -> {
+                reviews.analyze(reviewRunId,reviewContext,complete,this::reviewStopped,result->decisions.put(result.job().key(),result));
+                return null;
+            });
             if(reviewStopped())return;
             // 按原列表顺序统计，避免先返回的规则拒绝把同批待处理的通过岗位挤出观察窗口。
             for(var candidate:batch) {
@@ -1233,8 +1244,8 @@ public class Boss {
         if (!Boolean.TRUE.equals(config.getEnableAI())) return fallback;
         try {
             String introduction = aiConfig == null || aiConfig.getIntroduce() == null ? "" : aiConfig.getIntroduce();
-            String text = aiService.sendReviewRequest("该岗位已通过方向审核，请仅生成不超过80字的中文求职招呼语。根据个人介绍突出真实经历，不编造能力，不输出JSON、Markdown或审核结论。\n个人介绍："
-                    + introduction + "\n岗位：" + job.title() + "\n职责：" + job.description() + "\n参考招呼语：" + fallback);
+            String text = whileMonitoring(() -> aiService.sendReviewRequest("该岗位已通过方向审核，请仅生成不超过80字的中文求职招呼语。根据个人介绍突出真实经历，不编造能力，不输出JSON、Markdown或审核结论。\n个人介绍："
+                    + introduction + "\n岗位：" + job.title() + "\n职责：" + job.description() + "\n参考招呼语：" + fallback));
             if (text != null && !text.isBlank() && text.length() <= 300 && !isAiRejectResponse(text)
                     && !text.strip().startsWith("{") && !text.strip().startsWith("[") && !text.strip().startsWith("```")) return text.strip();
         } catch (Exception error) { log.warn("目标岗位已审核，生成招呼语失败，使用当前账号默认文本"); }
@@ -1282,7 +1293,7 @@ public class Boss {
             if(progressCallback!=null)progressCallback.accept(message,null,null);
         })) {
             detailPage.navigate(detailUrl);
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
             navigator.checkBlockingNotices();
 
             var salarySelection = config.getSalarySelection();
@@ -1321,7 +1332,7 @@ public class Boss {
                         break;
                     }
                 }
-                PlaywrightUtil.sleep(1);
+                browserPause(1);
             }
             if (!foundChatBtn) {
                 log.warn("未找到可用的沟通按钮，跳过岗位: {}", job.getJobName());
@@ -1378,7 +1389,7 @@ public class Boss {
                 if(!navigator.prepareToSend(shouldStopCallback,2_000))return skipSubmission("沟通页面未就绪或任务已取消");
                 if(!navigator.sendMessage(sendText.first(),shouldStopCallback,2_000))return skipSubmission("招呼语发送操作未完成");
                 sentAt = LocalDateTime.now();
-                PlaywrightUtil.sleep(1);
+                browserPause(1);
                 navigator.checkBlockingNotices();
             } else {
                 log.warn("未找到发送按钮，自动跳过！岗位：{}", job.getJobName());
@@ -1399,7 +1410,7 @@ public class Boss {
                 detailPage.close();
             } catch (Exception ignore) {
             }
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
 
             // 10. 保存本次沟通结果，由调用方和岗位资料一起写入。
             if (sendSuccess) {
@@ -1623,7 +1634,7 @@ public class Boss {
                 Locator closeButton = closeButtons.nth(i);
                 if (closeButton.isVisible()) {
                     closeButton.click(new Locator.ClickOptions().setTimeout(5_000));
-                    PlaywrightUtil.sleep(1);
+                    browserPause(1);
                     log.debug("已关闭不含图片控件的简化打招呼层");
                     return;
                 }
@@ -1659,7 +1670,7 @@ public class Boss {
             if (input != null) {
                 return input;
             }
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
         }
         return null;
     }
@@ -1745,7 +1756,7 @@ public class Boss {
                 stableSeconds = 0;
                 log.debug("等待图片简历发送确认时读取聊天状态失败（第{}秒）：{}", second, probeError.getMessage());
             }
-            PlaywrightUtil.sleep(1);
+            browserPause(1);
         }
 
         log.error("图片简历已选择，但{}秒内没有确认出现在本人聊天记录中，按发送失败处理。文件：{}，最后状态：{}",
@@ -2005,7 +2016,7 @@ public class Boss {
                 : buildDefaultPrompt(introduce, keyword, jobName, jd);
 
         try {
-            String result = aiService.sendRequest(requestMessage);
+            String result = whileMonitoring(() -> aiService.sendRequest(requestMessage));
             if (result == null) {
                 return new AiMessageDecision(false, config.getSayHi());
             }
@@ -2088,7 +2099,43 @@ public class Boss {
                     : ThreadLocalRandom.current().nextInt(min, waitTime + 1);
         }
         log.debug("岗位间停顿 {} 秒（wait_time={}，debugger={}）", seconds, waitTime, config.getDebugger());
-        PlaywrightUtil.sleep(seconds);
+        browserPause(seconds);
+    }
+
+    /** 等待原有间隔，仍然接收其他账号消息页的事件。 */
+    private void browserPause(int seconds) {
+        if (browserCheckpoint == null || page.isClosed()) {
+            PlaywrightUtil.sleep(seconds);
+            return;
+        }
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
+        for (long remaining; (remaining = until - System.nanoTime()) > 0;) {
+            browserCheckpoint.run();
+            page.waitForTimeout(Math.min(500, Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining))));
+        }
+    }
+
+    private <T> T whileMonitoring(Supplier<T> work) {
+        if (browserCheckpoint == null) return work.get();
+        long account = BossAccountContext.id();
+        var pending = CompletableFuture.supplyAsync(() -> {
+            try (var scope = BossAccountContext.use(account)) { return work.get(); }
+        }, Thread::startVirtualThread);
+        try {
+            while (!pending.isDone() && !page.isClosed()) {
+                browserCheckpoint.run();
+                page.waitForTimeout(250);
+            }
+        } catch (PlaywrightException unavailable) {
+            log.debug("等待模型时浏览器已切换，继续结算本次审核");
+        }
+        try {
+            return pending.join();
+        } catch (CompletionException failed) {
+            if (failed.getCause() instanceof RuntimeException error) throw error;
+            if (failed.getCause() instanceof Error error) throw error;
+            throw failed;
+        }
     }
 
     /**
@@ -2121,7 +2168,7 @@ public class Boss {
                 } catch (Exception e) {
                     log.error("等待滑块验证输入异常: {}", e.getMessage());
                 }
-                PlaywrightUtil.sleep(1);
+                browserPause(1);
                 // 验证通过后页面url会变，循环再检测一次
                 continue;
             }

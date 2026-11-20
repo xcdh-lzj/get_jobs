@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { BiRefresh } from 'react-icons/bi'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -22,11 +22,12 @@ function duration(milliseconds: number) {
 
 const EMPTY_LOGS: NonNullable<BossTaskStatus['progress']>['logs'] = []
 
-export default function DeliveryProgress({ status, connection, error, onRefresh }: {
+export default function DeliveryProgress({ status, connection, error, onRefresh, children }: {
   status: BossTaskStatus | null
   connection: 'connecting' | 'live' | 'reconnecting'
   error: string | null
   onRefresh: () => Promise<void>
+  children: ReactNode
 }) {
   const progress = status?.progress
   const [now, setNow] = useState(() => Date.now())
@@ -100,7 +101,9 @@ export default function DeliveryProgress({ status, connection, error, onRefresh 
           </p>}
           <p className="mt-3 text-xs text-muted-foreground">进度条按当前城市和关键词计算；累计数量覆盖本次任务。未投递包含过滤、跳过及未完成发送的岗位。</p>
         </div>
-        <RunLogPanel key={progress?.taskId ?? 'idle'} logs={progress?.logs ?? EMPTY_LOGS} updatedAt={progress?.updatedAt} />
+        <RunLogPanel key={progress?.taskId ?? 'idle'} logs={progress?.logs ?? EMPTY_LOGS} updatedAt={progress?.updatedAt}
+          emptyHint="任务开始后，这里会显示关键进展与每个岗位的处理结果。" retainedLimit={200} />
+        {children}
       </CardContent>
     </Card>
   )

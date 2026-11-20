@@ -53,7 +53,7 @@ public class PlaywrightManager {
     private boolean headless;
 
     // Playwright实例
-    private Playwright playwright;
+    private volatile Playwright playwright;
 
     // 用持久化上下文启动后没有独立的 Browser 对象，context 本身就代表这个浏览器
 
@@ -63,19 +63,19 @@ public class PlaywrightManager {
     private volatile boolean browserClosed = false;
 
     // 浏览器上下文（所有平台共享，在同一个窗口中打开多个标签页）
-    private BrowserContext context;
+    private volatile BrowserContext context;
 
     // Boss直聘页面
-    private Page bossPage;
+    private volatile Page bossPage;
 
     // 猎聘页面
-    private Page liepinPage;
+    private volatile Page liepinPage;
 
     // 51job页面（预留）
-    private Page job51Page;
+    private volatile Page job51Page;
 
     // 智联招聘页面（预留）
-    private Page zhilianPage;
+    private volatile Page zhilianPage;
 
     // 登录状态追踪（平台 -> 是否已登录）
     private final Map<String, Boolean> loginStatus = new ConcurrentHashMap<>();
@@ -293,36 +293,37 @@ public class PlaywrightManager {
         if (isInitialized()) {
             return;
         }
+        if (context != null && !browserClosed) {
+            // 只关掉 Boss 标签页时，原窗口里可能还有别的平台页。
+            newPlatformPage("boss");
+            setupBossPlatform();
+            return;
+        }
         log.info("========================================");
         log.info("  初始化浏览器自动化引擎");
         log.info("========================================");
 
         try {
-            // 启动Playwright，driver 指向 patchright（见 build.gradle.kts 的 installPatchrightDriver）
-            playwright = createPlaywright();
-            log.info("✓ Playwright引擎已启动 (driver: {})", describeDriver());
-
             // 清掉上次的"崩溃退出"标记，双保险（命令行标志偶尔不生效）
             sanitizeProfileExitState();
 
             // 用持久化上下文启动：Patchright 官方明确要求用 launchPersistentContext，
             // 而不是 launch() + newContext()。登录态直接落盘到 USER_DATA_DIR。
-            context = playwright.chromium().launchPersistentContext(USER_DATA_DIR, bossBrowserOptions(headless));
+            context = engine().chromium().launchPersistentContext(USER_DATA_DIR, bossBrowserOptions(headless));
             // 刻意不设置 UserAgent：伪造 UA 只改字符串，改不了 navigator.platform 和
             // navigator.userAgentData，反而制造出"UA 说 Mac、platform 说 Win32"这种致命矛盾。
             browserClosed = false;
             // 浏览器一旦关闭（手动关窗口 / Chrome 崩溃）立刻置位，
             // 让 isInitialized() 变 false，后续操作走重新初始化而不是一路 TargetClosedError
             context.onClose(closed -> {
+                if (context != closed) return;
                 browserClosed = true;
+                loginStatus.remove("boss");
                 log.warn("检测到浏览器已关闭，下次操作会自动重新初始化");
             });
             log.info("✓ Chrome已启动（持久化上下文: {}）", USER_DATA_DIR);
             log.info("浏览器运行模式：{}", headless ? "无窗口后台运行" : "显示窗口（支持扫码登录）");
             log.info("✓ BrowserContext已创建（所有平台共享）");
-
-            // 顺序创建所有Page（避免并发创建Page导致的竞态条件）
-            log.info("开始创建所有平台的Page...");
 
             // 持久化上下文自带的那个启动标签页不能复用！
             // 复用它会出现：标签页永远停在加载中（左上角一直转圈），而 page.evaluate /
@@ -331,23 +332,9 @@ public class PlaywrightManager {
             // 同一个浏览器里新开的标签页则完全正常，所以这里一律新建，最后把启动页关掉。
             List<Page> startupPages = new ArrayList<>(context.pages());
 
-            bossPage = context.newPage();
-            bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ Boss Page已创建");
+            newPlatformPage("boss");
 
-            liepinPage = context.newPage();
-            liepinPage.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ 猎聘 Page已创建");
-
-            job51Page = context.newPage();
-            job51Page.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ 51job Page已创建");
-
-            zhilianPage = context.newPage();
-            zhilianPage.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ 智联招聘 Page已创建");
-
-            // 四个业务页都建好了，把持久化上下文自带的启动空白页关掉
+            // 常驻 Boss 标签页已创建，关闭持久化上下文自带的启动空白页。
             for (Page startup : startupPages) {
                 try {
                     startup.close();
@@ -359,15 +346,9 @@ public class PlaywrightManager {
                 log.info("✓ 已关闭 {} 个启动空白页", startupPages.size());
             }
 
-            // 各平台初始化必须串行：它们共享同一个 BrowserContext 和同一条 Playwright 连接，
-            // 原来用 4 个 ForkJoinPool 线程并发跑，会互相打断导航（net::ERR_ABORTED）
-            log.info("开始依次初始化所有平台...");
             setupBossPlatform();
-            setupLiepinPlatform();
-            setup51jobPlatform();
-            setupZhilianPlatform();
 
-            log.info("✓ 浏览器自动化引擎初始化完成（所有平台已依次启动）");
+            log.info("✓ 浏览器自动化引擎初始化完成（已打开 Boss 直聘）");
             log.info("========================================");
         } catch (Exception e) {
             log.error("✗ 浏览器自动化引擎初始化失败", e);
@@ -375,9 +356,77 @@ public class PlaywrightManager {
         }
     }
 
+    private Playwright engine() {
+        if (playwright == null) {
+            playwright = createPlaywright();
+            log.info("✓ Playwright引擎已启动 (driver: {})", describeDriver());
+        }
+        return playwright;
+    }
+
+    /** 其他平台在用户打开登录页或执行该平台任务时初始化。 */
+    public Page readyPlatform(String platform, boolean interactive) {
+        return callOnPlaywright(() -> {
+            if (context == null || browserClosed) initInternal();
+            Page page = platformPage(platform);
+            if (page == null || page.isClosed()) {
+                page = newPlatformPage(platform);
+                try {
+                    switch (platform) {
+                        case "boss" -> setupBossPlatform();
+                        case "liepin" -> setupLiepinPlatform();
+                        case "51job" -> setup51jobPlatform();
+                        case "zhilian" -> {
+                            zhilianLoginGuided = false;
+                            setupZhilianPlatform();
+                        }
+                        default -> throw new IllegalArgumentException("不支持的平台");
+                    }
+                } catch (RuntimeException error) {
+                    try { page.close(); } catch (RuntimeException ignored) {}
+                    throw error;
+                }
+            }
+            if (interactive) page.bringToFront();
+            return page;
+        });
+    }
+
+    private Page newPlatformPage(String platform) {
+        Page page = context.newPage();
+        page.setDefaultTimeout(DEFAULT_TIMEOUT);
+        setPlatformPage(platform, page);
+        page.onClose(closed -> {
+            if (platformPage(platform) != closed) return;
+            setPlatformPage(platform, null);
+            if (!"boss".equals(platform)) setLoginStatus(platform, false);
+        });
+        return page;
+    }
+
+    private Page platformPage(String platform) {
+        return switch (platform) {
+            case "boss" -> bossPage;
+            case "liepin" -> liepinPage;
+            case "51job" -> job51Page;
+            case "zhilian" -> zhilianPage;
+            default -> throw new IllegalArgumentException("不支持的平台");
+        };
+    }
+
+    private void setPlatformPage(String platform, Page page) {
+        switch (platform) {
+            case "boss" -> bossPage = page;
+            case "liepin" -> liepinPage = page;
+            case "51job" -> job51Page = page;
+            case "zhilian" -> zhilianPage = page;
+            default -> throw new IllegalArgumentException("不支持的平台");
+        }
+    }
+
     /** 新账号复用浏览器启动参数，但使用独立的持久化目录。调用者必须在专用线程上。 */
     BrowserContext newBossAccountContext(Path directory, boolean interactive) {
-        return playwright.chromium().launchPersistentContext(directory, bossBrowserOptions(interactive ? false : headless));
+        return engine().chromium().launchPersistentContext(directory, bossBrowserOptions(interactive ? false : headless));
     }
 
     private BrowserType.LaunchPersistentContextOptions bossBrowserOptions(boolean headless) {
@@ -1119,24 +1168,14 @@ public class PlaywrightManager {
      * 主动保存51job Cookie到数据库（用于调试/验证）
      */
     public void save51jobCookiesToDb(String remark) {
-        save51jobCookiesToDatabase(remark);
+        saveCookiesToDb("51job", remark);
     }
 
     /**
      * 清理51job上下文中的Cookie
      */
     public void clear51jobCookies() {
-        try {
-            if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
-            }
-        } catch (Exception e) {
-            log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
-            throw new RuntimeException("清理共享上下文Cookie失败", e);
-        }
+        clearPlatformCookies(JOB51_DOMAIN);
     }
 
     /**
@@ -1159,13 +1198,12 @@ public class PlaywrightManager {
      * 触发 51job 登录流程：打开登录页并点击“微信扫码登录”按钮
      */
     public void trigger51jobLogin() {
+        runOnPlaywright(this::open51jobLogin);
+    }
+
+    private void open51jobLogin() {
         try {
-            if (job51Page == null) {
-                if (context == null) {
-                    throw new IllegalStateException("浏览器上下文尚未初始化");
-                }
-                job51Page = context.newPage();
-            }
+            Page page = readyPlatform("51job", true);
 
             // 如果已登录则直接返回
             if (checkIf51jobLoggedIn()) {
@@ -1173,27 +1211,16 @@ public class PlaywrightManager {
                 return;
             }
 
-            // 先尝试在首页点击“登录/注册”入口
-            try {
-                job51Page.navigate(JOB51_URL, new Page.NavigateOptions()
-                    .setTimeout(60000)
-                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
-                Locator loginEntry = job51Page.locator("span.login.loginBtnClick, text=/登录\\/注册|登录|注册/").first();
-                if (isVisibleQuick(loginEntry)) {
-                    loginEntry.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                }
-            } catch (Exception e) {
-                log.debug("在首页尝试点击登录入口失败: {}", e.getMessage());
-            }
-
             // 跳转到官方登录页
             String loginUrl = "https://login.51job.com/login.php";
-            job51Page.navigate(loginUrl, new Page.NavigateOptions()
-                .setTimeout(60000)
-                .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+            if (!page.url().startsWith(loginUrl)) {
+                page.navigate(loginUrl, new Page.NavigateOptions()
+                        .setTimeout(60000)
+                        .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+            }
 
             // 尝试点击“微信扫码登录”按钮
-            Locator wechatScanBtn = job51Page.locator(
+            Locator wechatScanBtn = page.locator(
                 "i.passIcon.custom-cursor-on-hover[data-sensor-id='sensor_login_wechatScan'], " +
                 "i.passIcon[data-sensor-id='sensor_login_wechatScan'], " +
                 "[data-sensor-id='sensor_login_wechatScan']"
@@ -1455,50 +1482,10 @@ public class PlaywrightManager {
     }
 
     /**
-     * 主动触发智联招聘登录：点击二维码入口并等待登录成功跳转
+     * 打开智联招聘登录页面，登录结果由平台状态监控更新。
      */
     public void triggerZhilianLogin() {
-        try {
-            if (zhilianPage == null) {
-                throw new IllegalStateException("智联招聘页面未初始化");
-            }
-
-            // 导航到智联首页，确保DOM就绪
-            zhilianPage.navigate(ZHILIAN_URL, new Page.NavigateOptions()
-                    .setTimeout(60000)
-                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
-
-            // 如果看到未登录入口，尝试打开二维码登录面板
-            Locator noLoginAnchor = zhilianPage.locator("a.home-header__c-no-login").first();
-            if (isVisibleQuick(noLoginAnchor)) {
-                Locator qrToggle = zhilianPage.locator("div.zppp-panel-normal-bar__img").first();
-                if (isVisibleQuick(qrToggle)) {
-                    qrToggle.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                    log.info("已点击智联二维码登录入口，等待用户扫码...");
-                } else {
-                    log.warn("未找到二维码登录入口元素：div.zppp-panel-normal-bar__img");
-                }
-            } else {
-                log.info("未检测到未登录入口，可能已登录或在其他页面");
-            }
-
-            // 监听登录成功：等待URL跳转到 i.zhaopin.com 或用户信息元素出现
-            try {
-                zhilianPage.waitForURL("**i.zhaopin.com**", new Page.WaitForURLOptions().setTimeout(120_000));
-                onZhilianLoginSuccess();
-                return;
-            } catch (Exception ignored) {
-            }
-            try {
-                zhilianPage.waitForSelector(".user-info, .user-name, .username-text", new Page.WaitForSelectorOptions().setTimeout(120_000));
-                onZhilianLoginSuccess();
-            } catch (Exception e) {
-                log.warn("等待智联登录成功超时或失败: {}", e.getMessage());
-            }
-        } catch (Exception e) {
-            log.error("触发智联登录流程失败: {}", e.getMessage(), e);
-            throw new RuntimeException("触发智联登录流程失败", e);
-        }
+        readyPlatform("zhilian", true);
     }
 
     /**
@@ -1537,7 +1524,7 @@ public class PlaywrightManager {
      * 主动保存智联招聘Cookie到数据库（用于调试/验证）
      */
     public void saveZhilianCookiesToDb(String remark) {
-        saveZhilianCookiesToDatabase(remark);
+        saveCookiesToDb("zhilian", remark);
     }
 
     /**
@@ -1547,30 +1534,34 @@ public class PlaywrightManager {
      * @param remark   备注
      */
     public void saveCookiesToDb(String platform, String remark) {
-        switch (platform) {
-            case "boss" -> saveBossCookiesToDatabase(remark);
-            case "liepin" -> saveLiepinCookiesToDatabase(remark);
-            case "51job" -> save51jobCookiesToDatabase(remark);
-            case "zhilian" -> saveZhilianCookiesToDatabase(remark);
-            default -> throw new IllegalArgumentException("Unsupported platform: " + platform);
-        }
+        runOnPlaywright(() -> {
+            // 按需打开平台后才能读取本次登录态。保存配置时保留尚未加载的 Cookie。
+            Page page = platformPage(platform);
+            if (page == null || page.isClosed()) return;
+            switch (platform) {
+                case "boss" -> saveBossCookiesToDatabase(remark);
+                case "liepin" -> saveLiepinCookiesToDatabase(remark);
+                case "51job" -> save51jobCookiesToDatabase(remark);
+                case "zhilian" -> saveZhilianCookiesToDatabase(remark);
+                default -> throw new IllegalArgumentException("不支持的平台");
+            }
+        });
     }
 
     /**
      * 清理智联招聘上下文中的Cookie
      */
     public void clearZhilianCookies() {
-        try {
+        clearPlatformCookies(ZHILIAN_DOMAIN);
+    }
+
+    private void clearPlatformCookies(String domain) {
+        runOnPlaywright(() -> {
             if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
+                context.clearCookies(new BrowserContext.ClearCookiesOptions()
+                        .setDomain(java.util.regex.Pattern.compile("(^|\\.)" + domain.replace(".", "\\.") + "$")));
             }
-        } catch (Exception e) {
-            log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
-            throw new RuntimeException("清理共享上下文Cookie失败", e);
-        }
+        });
     }
 
     /**
@@ -1644,24 +1635,14 @@ public class PlaywrightManager {
      * 主动保存猎聘Cookie到数据库（用于调试/验证）
      */
     public void saveLiepinCookiesToDb(String remark) {
-        saveLiepinCookiesToDatabase(remark);
+        saveCookiesToDb("liepin", remark);
     }
 
     /**
      * 清理猎聘上下文中的Cookie
      */
     public void clearLiepinCookies() {
-        try {
-            if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
-            }
-        } catch (Exception e) {
-            log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
-            throw new RuntimeException("清理共享上下文Cookie失败", e);
-        }
+        clearPlatformCookies(LIEPIN_DOMAIN);
     }
 
     /**
@@ -1862,7 +1843,11 @@ public class PlaywrightManager {
      * 检查Playwright是否已初始化
      */
     public boolean isInitialized() {
-        return playwright != null && context != null && bossPage != null && !browserClosed;
+        return hasDefaultBrowser() && bossPage != null;
+    }
+
+    boolean hasDefaultBrowser() {
+        return context != null && !browserClosed;
     }
 
     /**
@@ -1872,27 +1857,8 @@ public class PlaywrightManager {
      * 但每个页面操作都会抛 TargetClosedError —— 投递任务卡死、按钮点了没反应。
      * 发起任务前先过一遍这里。
      */
-    public synchronized void ensureReady() {
-        if (isInitialized()) {
-            return;
-        }
-        log.warn("浏览器不可用（已关闭或未初始化），正在重新初始化...");
-        // 旧对象已经失效，先清干净再重建，避免 init() 里的 isInitialized() 短路
-        try {
-            if (playwright != null) {
-                playwright.close();
-            }
-        } catch (Exception ignored) {
-            // 浏览器已经没了，关闭失败很正常
-        }
-        playwright = null;
-        context = null;
-        bossPage = null;
-        liepinPage = null;
-        job51Page = null;
-        zhilianPage = null;
-        browserClosed = false;
-        loginStatus.clear();
+    public void ensureReady() {
+        // 默认窗口关闭时只恢复它，Playwright 仍在持有其他 Boss 账号的独立窗口。
         init();
     }
 

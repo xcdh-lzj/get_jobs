@@ -37,7 +37,7 @@ class BossFollowUpWorkerDomTest {
                         firstMessageAt(id))).toList();
         var store = mock(BossFollowUpStore.class);
         var stopped = new AtomicBoolean();
-        when(store.candidates(any(), anyInt(), anyLong())).thenReturn(jobs);
+        when(store.candidates(any(), anyLong())).thenReturn(jobs);
         when(store.claim(anyString(), anyLong())).thenAnswer(call -> {
             if ("participant:cancel".equals(call.getArgument(0))) stopped.set(true);
             return true;
@@ -83,11 +83,11 @@ class BossFollowUpWorkerDomTest {
             var listing = context.newPage();
             listing.navigate(HOST + "/web/geek/jobs");
             var config = new BossConfig();
-            config.setFollowUpPolicy(new BossFollowUpPolicy(false, 48, 24, 20,
+            config.setFollowUpPolicy(new BossFollowUpPolicy(false, null,
                     new BossFollowUpPolicy.DateSelection(List.of(), List.of("2024-02-28", "2024-02-29"))));
             config.setRepeatChatMessages("  " + TEMPLATE + "\n\n " + ALTERNATE + "\n\t");
             var result = new BossFollowUpWorker(store, mock(BossService.class))
-                    .execute(listing, config, stopped::get, (message, current, total) -> {});
+                    .execute(listing, config, config.getFollowUpPolicy().window(System.currentTimeMillis()), stopped::get, progress -> {});
             assertEquals("stopped", result.state());
             assertEquals(14, result.checked());
             assertEquals(5, result.confirmed());

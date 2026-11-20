@@ -70,11 +70,14 @@ class BossAccountDataTest {
                 {"followUpPolicy":{"enabled":true,"waitHours":36,"intervalHours":12,"batchSize":15},
                  "repeatChatMessages":"示例跟进文案"}
                 """)).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
-        assertEquals(new BossFollowUpPolicy(true, 36, 12, 15, null), boss.loadBossConfig().getFollowUpPolicy());
+        assertEquals(BossFollowUpPolicy.defaults(), boss.loadBossConfig().getFollowUpPolicy());
         mvc.perform(put.content("""
-                {"followUpPolicy":{"enabled":true,"waitHours":36,"intervalHours":12,"batchSize":15,
+                {"followUpPolicy":{"enabled":true,"schedule":{"frequency":"weekly","weekdays":[5,1],"times":["15:00","10:00"]},
                  "dateSelection":{"daysAgo":[2,1],"dates":["2026-11-08"]}}}
                 """)).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        assertEquals(new BossFollowUpPolicy.Schedule("weekly", List.of(1, 5), List.of("10:00", "15:00")),
+                boss.loadBossConfig().getFollowUpPolicy().schedule());
+        assertTrue(boss.loadBossConfig().getFollowUpPolicy().enabled());
         assertEquals(new BossFollowUpPolicy.DateSelection(List.of(1, 2), List.of("2026-11-08")),
                 boss.loadBossConfig().getFollowUpPolicy().dateSelection());
         mvc.perform(put.content("{\"repeatChatMessages\":\"   \"}"))

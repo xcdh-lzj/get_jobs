@@ -23,8 +23,9 @@ class BossAccountQueueTest {
     private final BossAccountLocks locks=new BossAccountLocks();
     private final BossFollowUpStore followUpStore = mock(BossFollowUpStore.class);
     private final BossFollowUpWorker followUps = mock(BossFollowUpWorker.class);
-    private final BossJobService jobs=new BossJobService(manager,configs,provider,accounts,browsers,locks);
-    private final BossFollowUpService followUp = new BossFollowUpService(manager, configs, accounts, browsers, locks, followUpStore, followUps);
+    private final BossInboxService inbox = mock(BossInboxService.class);
+    private final BossJobService jobs=new BossJobService(manager,configs,provider,accounts,browsers,locks,inbox);
+    private final BossFollowUpService followUp = new BossFollowUpService(manager, configs, accounts, browsers, locks, followUpStore, followUps, inbox);
     private final Map<Long,Boss> workers=new HashMap<>();
     private final List<Long> execution=new CopyOnWriteArrayList<>();
 
@@ -33,6 +34,7 @@ class BossAccountQueueTest {
         when(accounts.profile(anyLong())).thenAnswer(c -> new BossAccountService.Profile("介绍"+c.getArgument(0),"模板"));
         when(browsers.loggedIn(anyLong())).thenReturn(true);
         when(browsers.ready(anyLong(),eq(false))).thenReturn(mock(Page.class));
+        when(browsers.newTaskPage(any())).thenAnswer(ignored -> mock(Page.class));
         var config=new BossConfig(); config.setKeywords(List.of("Java")); config.setCityCode(List.of("上海"));
         when(configs.getBossConfig()).thenReturn(config);
         when(manager.callOnPlaywright(any())).thenAnswer(c -> {
@@ -63,26 +65,38 @@ class BossAccountQueueTest {
         when(manager.isInitialized()).thenReturn(true);
         when(accounts.list()).thenReturn(List.of(new BossAccountService.Account(2, "示例账号", false)));
         when(configs.getBossConfig()).thenReturn(config);
-        followUp.checkSchedule();
-        verifyNoInteractions(followUpStore, followUps);
+        long slot = java.time.LocalDateTime.parse("2026-11-20T10:00").atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        followUp.checkScheduleAt(slot - 60_000);
+        verify(followUpStore, never()).enqueue(anyLong(), anyLong(), anyList(), anyLong());
+        verifyNoInteractions(followUps);
 
-        var policy = new BossFollowUpPolicy(true, 48, 24, 20, null);
+        var policy = new BossFollowUpPolicy(true, new BossFollowUpPolicy.Schedule("daily", List.of(), List.of("10:00")), null);
         config.setFollowUpPolicy(policy);
-        when(followUpStore.due(eq(2L), eq(policy), anyLong())).thenReturn(true);
+        var dates = List.of("2026-11-19");
+        when(followUpStore.pending()).thenReturn(List.of(new BossFollowUpStore.Run(22, 2, "scheduled", slot, slot,
+                null, null, "queued", dates, 0, 0, 0, 0, 0, "等待使用浏览器")));
+        when(followUpStore.startScheduled(eq(22L), anyLong())).thenReturn(true);
+        locks.reserve(List.of(1L));
+        try {
+            followUp.checkScheduleAt(slot + 5_000);
+            verify(followUpStore).enqueue(2, slot, dates, slot + 5_000);
+            verifyNoInteractions(followUps);
+        } finally { locks.release(); }
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var finished = new CountDownLatch(1);
-        when(followUps.execute(any(), same(config), any(), any())).thenAnswer(call -> {
+        when(followUps.execute(any(), same(config), any(), any(), any())).thenAnswer(call -> {
             assertEquals(2L, BossAccountContext.id());
             assertTrue(locks.busy(2L));
+            assertEquals(dates, call.<BossFollowUpPolicy.Window>getArgument(2).dateLabels());
             entered.countDown();
             assertTrue(release.await(5, TimeUnit.SECONDS));
-            return new BossFollowUpWorker.Result("completed", 1, 1, 0, "已跟进一条");
+            return new BossFollowUpWorker.Result("completed", 1, 1, 0, 0, "已跟进一条");
         });
         doAnswer(call -> { finished.countDown(); return null; })
-                .when(followUpStore).finish(2, "completed", 1, 1, 0, "已跟进一条");
+                .when(followUpStore).finish(22, "completed", 1, 1, 0, 0, "已跟进一条");
         try {
-            followUp.checkSchedule();
+            followUp.checkScheduleAt(slot + 10_000);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertEquals(2L, followUp.status(2).activeAccountId());
             assertNull(followUp.status(1).progress());
@@ -97,18 +111,19 @@ class BossAccountQueueTest {
         var config = new BossConfig();
         assertFalse(config.getFollowUpPolicy().enabled());
         when(configs.getBossConfig()).thenReturn(config);
+        when(followUpStore.startManual(eq(2L), anyList(), anyLong())).thenReturn(23L);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var done = new CountDownLatch(1);
-        when(followUps.execute(any(), same(config), any(), any())).thenAnswer(call -> {
-            var stop = call.<java.util.function.Supplier<Boolean>>getArgument(2);
+        when(followUps.execute(any(), same(config), any(), any(), any())).thenAnswer(call -> {
+            var stop = call.<java.util.function.Supplier<Boolean>>getArgument(3);
             entered.countDown();
             assertTrue(release.await(5, TimeUnit.SECONDS));
             assertTrue(stop.get());
-            return new BossFollowUpWorker.Result("stopped", 0, 0, 0, "跟进已停止");
+            return new BossFollowUpWorker.Result("stopped", 0, 0, 0, 0, "跟进已停止");
         });
         doAnswer(call -> { done.countDown(); return null; })
-                .when(followUpStore).finish(2, "stopped", 0, 0, 0, "跟进已停止");
+                .when(followUpStore).finish(23, "stopped", 0, 0, 0, 0, "跟进已停止");
         try {
             followUp.start(2);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
@@ -121,8 +136,25 @@ class BossAccountQueueTest {
         assertTrue(done.await(5, TimeUnit.SECONDS));
         assertNull(followUp.status(2).activeAccountId());
         assertFalse(locks.busy(2L));
-        verify(followUpStore, never()).due(anyLong(), any(), anyLong());
+        verify(followUpStore, never()).enqueue(anyLong(), anyLong(), anyList(), anyLong());
         verifyNoInteractions(provider);
+    }
+
+    @Test void scheduledFollowUpRecordsAnOfflineAccountFailure() {
+        var config = new BossConfig();
+        config.setFollowUpPolicy(new BossFollowUpPolicy(true,
+                new BossFollowUpPolicy.Schedule("daily", List.of(), List.of("15:00")), null));
+        long slot = java.time.LocalDateTime.parse("2026-11-20T15:00").atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        var dates = List.of("2026-11-19");
+        when(accounts.list()).thenReturn(List.of(new BossAccountService.Account(2, "示例账号", false)));
+        when(configs.getBossConfig()).thenReturn(config);
+        when(browsers.loggedIn(2)).thenReturn(false);
+        when(followUpStore.pending()).thenReturn(List.of(new BossFollowUpStore.Run(25, 2, "scheduled", slot, slot,
+                null, null, "queued", dates, 0, 0, 0, 0, 0, "等待使用浏览器")));
+        followUp.checkScheduleAt(slot + 2_000);
+        verify(followUpStore).finish(25, "failed", 0, 0, 0, 0, "账号未登录或浏览器未打开，请登录 Boss 后再跟进");
+        verifyNoInteractions(followUps);
+        assertFalse(locks.isReserved());
     }
 
     @Test void completesAccountsInChosenOrderWithSeparateProgressAndProfiles() throws Exception {

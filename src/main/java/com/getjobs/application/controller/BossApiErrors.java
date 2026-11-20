@@ -6,7 +6,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
 import java.util.Map;
 
-@RestControllerAdvice(assignableTypes={BossController.class,BossAccountController.class,BossConfigController.class,BossAnalyticsController.class,BossReviewController.class,BossBlacklistCopyController.class})
+@RestControllerAdvice(assignableTypes={BossController.class,BossAccountController.class,BossConfigController.class,BossAnalyticsController.class,BossReviewController.class,BossBlacklistCopyController.class,BossInboxController.class})
 public class BossApiErrors {
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<Map<String,Object>> status(ResponseStatusException error) {

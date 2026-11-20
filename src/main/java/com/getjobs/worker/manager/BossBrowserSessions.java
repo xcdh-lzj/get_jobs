@@ -3,6 +3,7 @@ package com.getjobs.worker.manager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.service.BossAccountService;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.worker.utils.PlaywrightUtil;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.WaitUntilState;
@@ -40,15 +41,16 @@ public class BossBrowserSessions {
         if (id==1 && interactive && manager.isHeadless())
             throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,
                     "默认账号当前为无窗口模式。需要扫码时，请将 getjobs.browser.headless 改为 false 后重启；已有登录态可点击确认并保存登录。");
-        manager.ensureReady();
         return manager.callOnPlaywright(() -> {
             if (id == 1) {
+                manager.ensureReady();
                 Page page = manager.getBossPage();
                 if (interactive) page.bringToFront(); // 仅用户主动打开登录页面时聚焦
                 return page;
             }
             Session session = sessions.get(id);
-            if (session == null || session.page.isClosed()) {
+            Page page = openedPage(id);
+            if (page == null) {
                 if (session != null) { try { session.context.close(); } catch (Exception ignored) {} }
                 BrowserContext context = manager.newBossAccountContext(profileDirectory(id), interactive);
                 try {
@@ -58,7 +60,7 @@ public class BossBrowserSessions {
                         var restored = manager.filterCookiesByDomain(manager.parseCookiesFromString(saved),"zhipin.com");
                         if (!restored.isEmpty()) context.addCookies(restored);
                     }
-                    Page page = context.pages().isEmpty() ? context.newPage() : context.pages().getFirst();
+                    page = context.pages().isEmpty() ? context.newPage() : context.pages().getFirst();
                     page.setDefaultTimeout(30_000);
                     page.navigate(ENTRY,new Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED).setTimeout(30_000));
                     session = new Session(context,page);
@@ -68,8 +70,8 @@ public class BossBrowserSessions {
                 } catch (Exception e) { context.close(); throw e; }
             }
             updateLogin(id,session);
-            if (interactive) session.page.bringToFront();
-            return session.page;
+            if (interactive) page.bringToFront();
+            return page;
         });
     }
 
@@ -78,6 +80,27 @@ public class BossBrowserSessions {
         Session session=sessions.get(id);
         return session!=null && session.loggedIn;
     }
+
+    public boolean isOpen(long id) {
+        return id == 1 ? manager.hasDefaultBrowser() : sessions.containsKey(id);
+    }
+
+    /** 仅寻找现有 Boss 标签页，调用者须在 Playwright 线程。 */
+    public Page openedPage(long id) {
+        if (!isOpen(id)) return null;
+        Session session = id == 1 ? null : sessions.get(id);
+        Page entry = session == null ? manager.getBossPage() : session.page;
+        if (entry != null && !entry.isClosed()) return entry;
+        BrowserContext context = session == null ? manager.getContext() : session.context;
+        return context.pages().stream()
+                .filter(page -> !page.isClosed() && page.url().startsWith("https://www.zhipin.com/"))
+                .findFirst().orElse(null);
+    }
+
+    public Page newTaskPage(Page sessionPage) {
+        return PlaywrightUtil.newBackgroundPage(sessionPage);
+    }
+
     public void save(long id) {
         manager.runOnPlaywright(() -> {
             if (id==1) manager.saveBossCookiesToDb("manual save");
@@ -85,9 +108,9 @@ public class BossBrowserSessions {
         });
     }
     public void logout(long id) {
-        manager.ensureReady();
         manager.runOnPlaywright(() -> {
             if (id==1) {
+                manager.ensureReady();
                 manager.clearBossCookies();
                 cookies.clearCookieByPlatform("boss","manual logout");
                 manager.setLoginStatus("boss",false);

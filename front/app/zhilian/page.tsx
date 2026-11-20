@@ -11,6 +11,7 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/zhilian/analysis/AnalysisContent'
 import PageHeader from '@/app/components/PageHeader'
+import PlatformLoginButton from '@/app/components/PlatformLoginButton'
 import { API_BASE } from '@/lib/api'
 
 interface ZhilianConfig {
@@ -236,9 +237,7 @@ export default function ZhilianPage() {
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !isLoggedIn ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
-                <BiPlay className="mr-1" /> 请先登录智联招聘
-              </Button>
+              <PlatformLoginButton platform="zhilian" name="智联招聘" onLogin={() => setIsLoggedIn(true)} />
             ) : isDelivering ? (
               <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
                 <BiStop className="mr-1" /> 停止投递

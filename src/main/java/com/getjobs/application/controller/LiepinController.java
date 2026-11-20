@@ -63,6 +63,17 @@ public class LiepinController {
         }
     }
 
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> openLogin() {
+        try {
+            playwrightManager.readyPlatform("liepin", true);
+            return ResponseEntity.ok(Map.of("success", true, "isLoggedIn", playwrightManager.isLoggedIn("liepin")));
+        } catch (RuntimeException error) {
+            log.warn("打开猎聘页面失败", error);
+            return ResponseEntity.internalServerError().body(Map.of("success", false, "message", "无法打开猎聘页面"));
+        }
+    }
+
     /**
      * 启动猎聘自动投递任务
      * @return 响应结果

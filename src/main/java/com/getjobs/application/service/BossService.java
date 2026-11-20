@@ -286,7 +286,7 @@ public class BossService {
                 : BossFollowUpPolicy.read(existing == null ? null : existing.getFollowUpSettings());
         String followUpText = partial.getRepeatChatMessages() != null ? partial.getRepeatChatMessages()
                 : existing == null ? null : existing.getRepeatChatMessages();
-        if (followUp.enabled() && followUpText != null && followUpText.isBlank()) {
+        if (followUp.enabled() && (followUpText == null || followUpText.isBlank())) {
             throw new IllegalArgumentException("开启定期跟进时，请至少填写一条跟进消息");
         }
         partial.setFollowUpPolicy(followUp);

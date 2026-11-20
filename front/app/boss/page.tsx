@@ -23,6 +23,7 @@ import BossReviewPanel from './BossReviewPanel'
 import BossCityPlan from './BossCityPlan'
 import BossBlacklistCopy from './BossBlacklistCopy'
 import BossFollowUpSettings from './BossFollowUpSettings'
+import BossFollowUpLog from './BossFollowUpLog'
 import { defaultFollowUpPolicy, followUpError, type FollowUpPolicy } from '@/lib/boss-follow-up'
 import type { useBossFollowUp } from '@/lib/use-boss-follow-up'
 import BossHrActivitySettings, { defaultHrActivityPolicy, type HrActivityPolicy } from './BossHrActivitySettings'
@@ -665,7 +666,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
     : followUpValidation
   const handleFollowUp = (command: 'start' | 'stop') => {
     if (command === 'start' && (followUpBlocked || deliveryCommand)) return
-    setSection('follow-up')
+    setSection('overview')
     void followUp.run(command)
   }
 
@@ -677,7 +678,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
       {isDelivering ? <Button variant="destructive" disabled={!!deliveryCommand || isStopping} onClick={() => void handleStopDelivery()}><BiStop />{isStopping ? '正在停止投递…' : '停止投递'}</Button>
         : <Button variant="outline" disabled={saving || hasUnsaved || !editorsReady || isBusy || !taskStatus || !isLoggedIn || !!deliveryCommand} title={hasUnsaved ? '请先保存全部修改' : undefined} onClick={() => void handleStartDelivery()}><BiPlay />{deliveryCommand === 'start' ? '正在启动投递…' : '开始投递'}</Button>}
       {isFollowing ? <Button variant="destructive" disabled={!!followUp.command || followUp.status?.stopping} onClick={() => handleFollowUp('stop')}><BiStop />{followUp.status?.stopping || followUp.command === 'stop' ? '正在停止跟进…' : '停止跟进'}</Button>
-        : <Button variant="outline" disabled={!!followUpBlocked || !!followUp.command || !!deliveryCommand} title={followUpBlocked || undefined} onClick={() => handleFollowUp('start')}><BiPlay />{followUp.command === 'start' ? '正在启动跟进…' : '开始跟进'}</Button>}
+        : <Button variant="outline" disabled={!!followUpBlocked || !!followUp.command || !!deliveryCommand} title={followUpBlocked || undefined} onClick={() => handleFollowUp('start')}><BiPlay />{followUp.command === 'start' ? '正在启动跟进…' : '立即跟进'}</Button>}
     </WorkspaceSaveBar>
     {followUp.commandError && <p role="alert" className="rounded-lg border border-red-300 p-3 text-sm text-red-600">{followUp.commandError}</p>}
     <Tabs value={section} onValueChange={setSection}>
@@ -691,8 +692,10 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
         ] as const).map(([value, label, Icon]) => <TabsTrigger key={value as string} value={value as string}><Icon className="mr-2 h-4 w-4" />{label as string}</TabsTrigger>)}
       </TabsList>
       <TabsContent value="overview" forceMount className="workspace-panel">
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_270px]">
-          <DeliveryProgress status={taskStatus} connection={progressConnection} error={progressError} onRefresh={refreshStatus} />
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_270px]">
+          <DeliveryProgress status={taskStatus} connection={progressConnection} error={progressError} onRefresh={refreshStatus}>
+            <BossFollowUpLog accountId={accountId} status={followUp.status} loadError={followUp.loadError} visible={section === 'overview'} />
+          </DeliveryProgress>
           <aside className="space-y-5">
             <Card><CardHeader><CardTitle>当前投递策略</CardTitle><CardDescription>{accountName} · {hasUnsaved ? '含未保存的修改' : '已保存配置'}</CardDescription></CardHeader><CardContent className="space-y-4">
               <div><p className="mb-2 text-xs text-muted-foreground">搜索关键词</p><div className="flex flex-wrap gap-1.5">{keywordsDisplay.split(/[,，]/).map(word => word.trim()).filter(Boolean).map(word => <span key={word} className="rounded-md border bg-muted/40 px-2 py-1 text-xs">{word}</span>)}</div></div>
@@ -1143,10 +1146,10 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
       </TabsContent>
       <TabsContent value="follow-up" forceMount className="workspace-panel">
         <div className="section-heading"><div><h2>定期跟进</h2><p>跟进已投递且未收到回复的会话，包含未读和已读未回。</p></div></div>
-        {!isFollowing && followUpBlocked && <p className="mb-4 text-sm text-muted-foreground">{followUpBlocked}</p>}
-        <BossFollowUpSettings accountId={accountId} policy={followUpPolicy} messages={followUpMessages}
-          disabled={locked || saving || !!followUp.command} status={followUp.status} loadError={followUp.loadError}
-          runningAccountId={followUp.activeAccountId}
+        {!isFollowing && followUpBlocked && followUpBlocked !== followUpValidation &&
+          <p className="mb-4 text-sm text-muted-foreground">{followUpBlocked}</p>}
+        <BossFollowUpSettings policy={followUpPolicy} messages={followUpMessages}
+          disabled={locked || saving || !!followUp.command} timeZone={followUp.status?.timeZone}
           onPolicyChange={followUpPolicy => setConfig(previous => ({ ...previous, followUpPolicy }))}
           onMessagesChange={repeatChatMessages => setConfig(previous => ({ ...previous, repeatChatMessages }))} />
       </TabsContent>

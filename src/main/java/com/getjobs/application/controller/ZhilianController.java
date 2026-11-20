@@ -122,6 +122,7 @@ public class ZhilianController {
         try {
             playwrightManager.triggerZhilianLogin();
             response.put("success", true);
+            response.put("isLoggedIn", playwrightManager.isLoggedIn("zhilian"));
             response.put("message", "已尝试打开智联二维码登录入口，请在浏览器扫码登录");
             return ResponseEntity.ok(response);
         } catch (Exception e) {

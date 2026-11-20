@@ -53,10 +53,13 @@ export function useBossFollowUp(accountId: number) {
       if (!response.ok || !result.success) throw new Error(result.message || '跟进操作失败')
       setSnapshot(previous => {
         const current = previous?.accountId === accountId ? previous.status : null
-        return { accountId, status: { activeAccountId: accountId, stopping: next === 'stop',
-          progress: next === 'start' ? { checked: 0, total: 0, confirmed: 0, message: '正在准备跟进任务', jobName: null }
+        return { accountId, status: { activeAccountId: accountId, activeRunId: current?.activeRunId ?? null, stopping: next === 'stop',
+          progress: next === 'start' ? { checked: 0, total: 0, confirmed: 0, unconfirmed: 0, failed: 0, message: '正在准备跟进任务', jobName: null }
             : current?.progress ?? null,
           lastRun: current?.lastRun ?? null,
+          recentRuns: current?.recentRuns ?? [],
+          nextScheduledAt: current?.nextScheduledAt ?? null,
+          timeZone: current?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
         } }
       })
       return true

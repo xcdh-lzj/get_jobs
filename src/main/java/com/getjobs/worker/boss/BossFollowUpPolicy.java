@@ -1,31 +1,61 @@
 package com.getjobs.worker.boss;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-/** 每个账号独立授权定时跟进，旧版重复沟通开关不会启用定时发送。 */
-public record BossFollowUpPolicy(boolean enabled, int waitHours, int intervalHours, int batchSize, DateSelection dateSelection) {
+/** 每个账号配置固定时刻和要核对的投递日期。 */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record BossFollowUpPolicy(boolean enabled, Schedule schedule, DateSelection dateSelection) {
     private static final ObjectMapper JSON = new ObjectMapper();
     public static final long MESSAGE_INTERVAL_MILLIS = Duration.ofHours(12).toMillis();
 
-    public static BossFollowUpPolicy defaults() {
-        return new BossFollowUpPolicy(false, 48, 24, 20, new DateSelection(List.of(1), List.of()));
+    public BossFollowUpPolicy {
+        // 旧版间隔无法推断用户希望在哪个钟点发送，保留日期，等待用户设定时刻。
+        if (schedule == null) {
+            enabled = false;
+            schedule = new Schedule("daily", List.of(), List.of());
+        }
+        if (dateSelection == null) dateSelection = new DateSelection(List.of(1), List.of());
     }
 
-    /** 未设置日期的旧配置沿用等待时间。日期选择可合并相对日期和指定日历日期。 */
+    public static BossFollowUpPolicy defaults() {
+        return new BossFollowUpPolicy(false, null, null);
+    }
+
+    public record Schedule(String frequency, List<Integer> weekdays, List<String> times) {
+        public Schedule {
+            if (!"daily".equals(frequency) && !"weekly".equals(frequency))
+                throw new IllegalArgumentException("请选择每天或每周执行");
+            if (weekdays == null || weekdays.stream().anyMatch(day -> day == null || day < 1 || day > 7))
+                throw new IllegalArgumentException("星期须在周一到周日之间");
+            if (times == null || times.stream().anyMatch(time -> time == null || !time.matches("(?:[01][0-9]|2[0-3]):[0-5][0-9]")))
+                throw new IllegalArgumentException("执行时间须为 24 小时制 HH:mm");
+            weekdays = weekdays.stream().distinct().sorted().toList();
+            times = times.stream().distinct().sorted().toList();
+        }
+
+        private boolean runsOn(LocalDate date) {
+            return "daily".equals(frequency) || weekdays.contains(date.getDayOfWeek().getValue());
+        }
+    }
+
+    /** 日期选择可合并滚动日期（如昨天）和固定的日历日期。 */
     public record DateSelection(List<Integer> daysAgo, List<String> dates) {
         public DateSelection {
-            if (daysAgo == null || dates == null || daysAgo.size() > 31 || dates.size() > 31
+            if (daysAgo == null || dates == null
                     || daysAgo.stream().anyMatch(day -> day == null || day < 0 || day > 30)) {
                 throw new IllegalArgumentException("跟进日期超出选择范围");
             }
@@ -55,26 +85,55 @@ public record BossFollowUpPolicy(boolean enabled, int waitHours, int intervalHou
         public boolean allows(long timestamp) {
             if (timestamp == 0) return true;
             var at = Instant.ofEpochMilli(timestamp).atZone(cutoff.getZone());
-            return !at.isAfter(cutoff) && (dates.isEmpty() || dates.contains(at.toLocalDate()));
+            return !at.isAfter(cutoff) && dates.contains(at.toLocalDate());
+        }
+
+        public List<String> dateLabels() {
+            return dates.stream().sorted().map(LocalDate::toString).toList();
         }
     }
 
     public Window window(long now) {
-        // 岗位历史在 SQLite 中使用服务端本地时间。
+        return window(now, now);
+    }
+
+    public Window window(long now, long dateReference) {
+        // 岗位历史使用服务端本地时间。等待中的任务以原定执行日计算「昨天」。
         var current = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault());
-        return dateSelection == null ? new Window(current.minusHours(waitHours), Set.of())
-                : new Window(current, dateSelection.resolve(current.toLocalDate()));
+        var targetDay = Instant.ofEpochMilli(dateReference).atZone(current.getZone()).toLocalDate();
+        return new Window(current, dateSelection.resolve(targetDay));
+    }
+
+    /** 每个本地日期的同一时刻只对应一个任务，跨夏令时重复小时也不会重复触发。 */
+    public Long slotAt(long now) {
+        if (!enabled) return null;
+        var minute = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.MINUTES);
+        if (!schedule.runsOn(minute.toLocalDate()) || !schedule.times().contains(minute.toLocalTime().toString())) return null;
+        var slot = minute.toLocalDateTime().atZone(minute.getZone());
+        return slot.equals(minute) ? slot.toInstant().toEpochMilli() : null;
+    }
+
+    public Long nextAfter(long now) {
+        if (!enabled) return null;
+        var current = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault());
+        for (int offset = 0; offset <= 7; offset++) {
+            var day = current.toLocalDate().plusDays(offset);
+            if (!schedule.runsOn(day)) continue;
+            for (String time : schedule.times()) {
+                var local = day.atTime(LocalTime.parse(time));
+                var slot = local.atZone(current.getZone());
+                if (slot.toLocalDateTime().equals(local) && slot.isAfter(current)) return slot.toInstant().toEpochMilli();
+            }
+        }
+        return null;
     }
 
     public BossFollowUpPolicy validated() {
-        if (dateSelection == null && (waitHours < 1 || waitHours > 720)) {
-            throw new IllegalArgumentException("首次联系后的等待时间须为 1 至 720 小时");
+        if (enabled && schedule.times().isEmpty()) {
+            throw new IllegalArgumentException("请选择至少一个执行时间");
         }
-        if (intervalHours < 1 || intervalHours > 720) {
-            throw new IllegalArgumentException("自动检查间隔须为 1 至 720 小时");
-        }
-        if (batchSize < 1 || batchSize > 100) {
-            throw new IllegalArgumentException("每轮检查上限须为 1 至 100 个岗位");
+        if (enabled && "weekly".equals(schedule.frequency()) && schedule.weekdays().isEmpty()) {
+            throw new IllegalArgumentException("请选择每周执行的星期");
         }
         return this;
     }

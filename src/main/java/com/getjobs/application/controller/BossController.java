@@ -1,6 +1,7 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.service.BossAccountContext;
+import com.getjobs.application.service.BossFollowUpStore;
 import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.manager.BossBrowserSessions;
 import com.getjobs.worker.service.BossFollowUpService;
@@ -70,6 +71,14 @@ public class BossController {
     @GetMapping("/status") public Map<String,Object> getBossStatus() { return jobs.getStatus(BossAccountContext.id()); }
     @GetMapping("/follow-up") public BossFollowUpService.Status followUp() {
         return followUps.status(BossAccountContext.id());
+    }
+    @GetMapping("/follow-up/runs")
+    public List<BossFollowUpStore.Run> followUpHistory(@RequestParam(required = false) Long before) {
+        return followUps.history(BossAccountContext.id(), before);
+    }
+    @GetMapping("/follow-up/runs/{id}/logs")
+    public List<BossFollowUpStore.Log> followUpLogs(@PathVariable long id) {
+        return followUps.logs(BossAccountContext.id(), id);
     }
     @PostMapping("/follow-up/start")
     public ResponseEntity<Map<String,Object>> startFollowUp() {

@@ -9,6 +9,7 @@ import com.getjobs.worker.boss.BossConfig;
 import com.getjobs.worker.boss.BossFollowUpWorker;
 import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.manager.BossBrowserSessions;
+import com.getjobs.worker.manager.BossInboxService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import com.getjobs.worker.service.BossFollowUpService;
 import com.getjobs.worker.service.BossJobService;
@@ -80,19 +81,20 @@ class BossProgressControllerTest {
         source.setUrl("jdbc:sqlite:" + directory.resolve("follow-up.db"));
         var store = spy(new BossFollowUpStore(new JdbcTemplate(source)));
         store.migrate();
-        var followUp = new BossFollowUpService(manager, configs, mock(BossAccountService.class), browsers, new BossAccountLocks(), store, worker);
+        var followUp = new BossFollowUpService(manager, configs, mock(BossAccountService.class), browsers,
+                new BossAccountLocks(), store, worker, mock(BossInboxService.class));
         when(configs.getBossConfig()).thenReturn(new BossConfig());
         when(browsers.loggedIn(2L)).thenReturn(true);
         when(browsers.ready(2L, false)).thenReturn(mock(Page.class));
         when(manager.callOnPlaywright(any())).thenAnswer(call -> call.<Callable<?>>getArgument(0).call());
         var release = new CountDownLatch(1);
         var finished = new CountDownLatch(1);
-        when(worker.execute(any(), any(), any(), any())).thenAnswer(call -> {
+        when(worker.execute(any(), any(), any(), any(), any())).thenAnswer(call -> {
             assertTrue(release.await(5, TimeUnit.SECONDS));
-            return new BossFollowUpWorker.Result("stopped", 0, 0, 0, "跟进已停止");
+            return new BossFollowUpWorker.Result("stopped", 0, 0, 0, 0, "跟进已停止");
         });
         doAnswer(call -> { call.callRealMethod(); finished.countDown(); return null; })
-                .when(store).finish(eq(2L), eq("stopped"), anyInt(), anyInt(), anyInt(), anyString());
+                .when(store).finish(anyLong(), eq("stopped"), anyInt(), anyInt(), anyInt(), anyInt(), anyString());
         var mvc = MockMvcBuilders.standaloneSetup(new BossController(jobs, browsers, followUp)).build();
         try (var scope = BossAccountContext.use(2L)) {
             mvc.perform(post("/api/boss/follow-up/start")).andExpect(status().isOk());
@@ -103,6 +105,9 @@ class BossProgressControllerTest {
             assertTrue(finished.await(5, TimeUnit.SECONDS));
             mvc.perform(get("/api/boss/follow-up")).andExpect(status().isOk())
                     .andExpect(jsonPath("$.activeAccountId").value(nullValue())).andExpect(jsonPath("$.lastRun.state").value("stopped"));
+            long runId = store.history(2L, null).getFirst().id();
+            mvc.perform(get("/api/boss/follow-up/runs/" + runId + "/logs")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$[1].message").value("跟进已停止"));
         } finally {
             release.countDown();
         }

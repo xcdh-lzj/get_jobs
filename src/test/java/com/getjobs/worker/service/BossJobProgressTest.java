@@ -2,6 +2,7 @@ package com.getjobs.worker.service;
 
 import com.getjobs.application.service.*;
 import com.getjobs.worker.manager.BossBrowserSessions;
+import com.getjobs.worker.manager.BossInboxService;
 import java.util.List;
 import com.getjobs.worker.boss.Boss;
 import com.getjobs.worker.boss.BossConfig;
@@ -28,13 +29,17 @@ class BossJobProgressTest {
     private final AtomicReference<Boss.ProgressCallback> callback = new AtomicReference<>();
     private final BossAccountService accounts = mock(BossAccountService.class);
     private final BossBrowserSessions browsers = mock(BossBrowserSessions.class);
-    private final BossJobService service = new BossJobService(manager, configs, provider, accounts, browsers, new BossAccountLocks());
+    private final Page accountPage = mock(Page.class);
+    private final Page taskPage = mock(Page.class);
+    private final BossJobService service = new BossJobService(manager, configs, provider, accounts, browsers,
+            new BossAccountLocks(), mock(BossInboxService.class));
 
     @BeforeEach void setup() {
         when(browsers.loggedIn(1L)).thenReturn(true);
         when(accounts.require(1L)).thenReturn(new BossAccountService.Account(1,"默认账号",true));
         when(accounts.profile(1L)).thenReturn(new BossAccountService.Profile("个人介绍","模板"));
-        when(browsers.ready(1L,false)).thenReturn(mock(Page.class));
+        when(browsers.ready(1L,false)).thenReturn(accountPage);
+        when(browsers.newTaskPage(accountPage)).thenReturn(taskPage);
         var config = new BossConfig(); config.setKeywords(List.of("Java")); config.setCityCode(List.of("上海"));
         when(configs.getBossConfig()).thenReturn(config);
         when(provider.getObject()).thenReturn(boss);
@@ -67,6 +72,9 @@ class BossJobProgressTest {
         assertFalse(service.isRunning());
         assertTrue(messages.stream().anyMatch(m -> "success".equals(m.getType())));
         verify(manager).resumeBossMonitoring();
+        verify(boss).setPage(taskPage);
+        verify(taskPage).close();
+        verifyNoInteractions(accountPage);
     }
 
     @Test void failedLoginIsVisibleAndDoesNotStartBrowserDelivery() {
