@@ -18,3 +18,14 @@ test('custom salary permits decimal and absent bounds while rejecting reversed o
   for (const bounds of [[12.5, 18.5], [15, null], [null, 20], [null, null]]) assert.equal(salaryPolicyError({ mode: 'custom', minMonthlyK: bounds[0], maxMonthlyK: bounds[1] }), '')
   for (const bounds of [[25, 10], [0, 20], [NaN, null], [null, Infinity]]) assert.ok(salaryPolicyError({ mode: 'custom', minMonthlyK: bounds[0], maxMonthlyK: bounds[1] }))
 })
+
+test('posted salary limits validate independently in either salary mode', () => {
+  for (const mode of ['selection', 'custom']) {
+    const base = { mode, minMonthlyK: null, maxMonthlyK: null }
+    assert.equal(salaryPolicyError({ ...base, maxPostedMonthlyK: 20.5 }), '')
+    assert.equal(salaryPolicyError({ ...base, minPostedMonthlyK: 12, maxPostedMonthlyK: 12 }), '')
+    assert.ok(salaryPolicyError({ ...base, minPostedMonthlyK: 21, maxPostedMonthlyK: 20 }))
+    assert.ok(salaryPolicyError({ ...base, minPostedMonthlyK: 0 }))
+    assert.ok(salaryPolicyError({ ...base, maxPostedMonthlyK: Infinity }))
+  }
+})

@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -31,10 +32,12 @@ final class BossChatNavigator implements AutoCloseable {
     private final List<Page> popups = new ArrayList<>();
     private final Consumer<Page> popupListener = popups::add;
     private final Consumer<String> progress;
+    private Consumer<Page> checkExistingPage;
     private record ReminderAttempt(ElementHandle message,String text) {}
     private final Map<Page,ReminderAttempt> reminderAttempts=new IdentityHashMap<>();
     private int reminderClicks;
     private boolean allowRepeatChat;
+    private boolean samePositionOnly;
     private Page chatPage;
     private Page newPositionPage;
     private boolean draftFilled;
@@ -119,7 +122,8 @@ final class BossChatNavigator implements AutoCloseable {
                     if (newPositionPage == null && confirmed && candidate == confirmationPage && candidate.url().equals(confirmationUrl)) {
                         continue;
                     }
-                    if (newPositionPage == null && repeat && candidate == origin && candidate.url().equals(entryUrl)) continue;
+                    if (newPositionPage == null && repeat && candidate == origin && candidate.url().equals(entryUrl)
+                            && (!samePositionOnly || inputInitiallyVisible)) continue;
                     // 每轮新建定位器，避免导航后继续使用旧 frame 的输入框。
                     Locator input = candidate.locator(INPUT).first();
                     if (input.isVisible() && input.isEditable(new Locator.IsEditableOptions().setTimeout(500))) {
@@ -137,6 +141,12 @@ final class BossChatNavigator implements AutoCloseable {
         return null;
     }
 
+    Chat openExisting(Locator button, Supplier<Boolean> stop, long timeoutMs, Consumer<Page> pageCheck) {
+        samePositionOnly = true;
+        checkExistingPage = pageCheck;
+        return open(button, true, true, stop, timeoutMs);
+    }
+
     boolean switchedPosition() {
         return newPositionPage != null;
     }
@@ -148,6 +158,9 @@ final class BossChatNavigator implements AutoCloseable {
     }
 
     void checkBlockingNotices() {
+        if (checkExistingPage != null) {
+            ownedPages().stream().filter(page -> !page.isClosed() && !"about:blank".equals(page.url())).forEach(checkExistingPage);
+        }
         // 账号额度用尽优先处理；岗位不匹配只结束本岗位。
         checkDailyLimit();
         BossJobBlock.check(origin);
@@ -183,8 +196,13 @@ final class BossChatNavigator implements AutoCloseable {
     }
 
     boolean sendMessage(Locator send,Supplier<Boolean> stop,long timeoutMs) {
+        return sendMessage(send, stop, timeoutMs, () -> true);
+    }
+
+    boolean sendMessage(Locator send, Supplier<Boolean> stop, long timeoutMs, BooleanSupplier beforeClick) {
         try {
-            if(!prepareInteraction(send,stop,timeoutMs))return false;
+            if (!prepareInteraction(send, stop, timeoutMs) || stop != null && Boolean.TRUE.equals(stop.get())
+                    || !beforeClick.getAsBoolean() || stop != null && Boolean.TRUE.equals(stop.get())) return false;
             send.click(new Locator.ClickOptions().setTimeout(timeoutMs));
             checkBlockingNotices();return true;
         }catch(PlaywrightException blocked) {
@@ -233,6 +251,9 @@ final class BossChatNavigator implements AutoCloseable {
     }
 
     private void requireRepeatChat() {
+        if (samePositionOnly) {
+            throw new BossJobBlockedException("平台要求更换沟通职位，已跳过该会话");
+        }
         if (!allowRepeatChat) {
             throw new BossJobBlockedException("Boss 提示已与该招聘者沟通过，当前账号关闭了重复沟通或未配置跟进消息");
         }

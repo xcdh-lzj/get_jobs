@@ -24,6 +24,7 @@ public class BossConfig {
 
     /** 每行一条跟进消息；空列表时跳过，不回退到首次打招呼语。 */
     private String repeatChatMessages = DEFAULT_REPEAT_CHAT_MESSAGES;
+    private BossFollowUpPolicy followUpPolicy = BossFollowUpPolicy.defaults();
 
     public String randomRepeatChatMessage() {
         List<String> messages = repeatChatMessages == null ? List.of()

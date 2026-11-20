@@ -14,6 +14,8 @@ import java.util.regex.Pattern;
 
 /** 仅打开岗位详情读取JD，不查找或点击“立即沟通”。 */
 final class BossReviewDetails {
+    private static final String SALARY_HEADING = ".job-banner .salary, .job-banner .salary-text, .job-banner .job-salary, "
+            + ".info-primary .salary, .info-primary .salary-text, .info-primary .job-salary";
     private static final Pattern COMPANY_SCALE = Pattern.compile(
             "^(?:(?:公司)?规模[:：]?)?((?:\\d+(?:-\\d+)?人(?:以上|以下)?|(?:少于|超过|不足)\\d+人))$");
     record Detail(BossReviewJob job,String error) {}
@@ -55,11 +57,8 @@ final class BossReviewDetails {
                 if(description.count()>0) full=full.withDescription(description.allTextContents().stream().filter(s->!s.isBlank()).reduce((a,b)->a+"\n"+b).orElse(""));
             }
             if(BossSalary.parse(full.salary())==null) {
-                // 接口未提供可用薪资时，补读本岗位详情页主标题区；不使用推荐岗位卡片的薪资。
-                Locator salary=detail.locator(".job-banner .salary, .job-banner .salary-text, .job-banner .job-salary, .info-primary .salary, .info-primary .salary-text, .info-primary .job-salary");
-                for(String text:salary.allTextContents()) {
-                    if(BossSalary.parse(text)!=null) { full=full.withSalary(text);break; }
-                }
+                String salary = readSalaryFromHeading(detail);
+                if (!salary.isBlank()) full = full.withSalary(salary);
             }
             full=full.withActivity(BossHrActivityReader.readWithFallback(detail,full.activeStatus(),requireHr));
             if (full.companyScale().isBlank()) full = full.withCompanyScale(readCompanyScale(detail));
@@ -69,6 +68,15 @@ final class BossReviewDetails {
         finally { try { if(!detail.isClosed())detail.close(); } catch(RuntimeException ignored) { /* 不覆盖停止或额度上限等原始结果。 */ } }
     }
     private static String valueOr(String value,String fallback) { return value.isBlank()?fallback:value; }
+
+    static String readSalaryFromHeading(Page detail) {
+        String negotiable = "";
+        for (String text : detail.locator(SALARY_HEADING).allTextContents()) {
+            if (BossSalary.parse(text) != null) return BossSalary.normalize(text);
+            if (text.contains("面议")) negotiable = text.strip();
+        }
+        return negotiable;
+    }
 
     private static String readCompanyScale(Page detail) {
         try {

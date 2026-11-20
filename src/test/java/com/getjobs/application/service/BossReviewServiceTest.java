@@ -35,6 +35,22 @@ class BossReviewServiceTest {
     }
     @AfterEach void cleanup() {service.shutdown();BossAccountContext.clear();}
 
+    @Test void stricterPostedLimitsApplyDuringLocalScreeningEvenWithUnlimitedWebsiteSalary() {
+        var config = new BossConfigEntity();
+        config.setSalary("[不限]");
+        config.setSalaryPolicy(new com.getjobs.worker.boss.BossSalaryPolicy("selection", null, null, 12.0, 20.0));
+        when(boss.getFirstConfig()).thenReturn(config);
+        var context = service.forCity(service.context(null, false), "广州");
+        var job = BossReviewStoreTest.job();
+        assertTrue(context.filters().hasSalaryFilter());
+        var rejected = service.preScreen(job.withSalary("15-60K"), context);
+        assertEquals("reject", rejected.decision());
+        assertTrue(rejected.reason().contains("最高月薪 60K"));
+        assertNull(service.preScreen(job.withSalary("12-20K"), context));
+        assertNull(service.preScreen(job.withSalary("面议"), context));
+        verify(ai, never()).sendJobReviewRequest(anyString(), anyBoolean(), anyInt());
+    }
+
     @Test void explicitCustomSalaryOverridesPresetAndLegacyBoundsAndSurvivesCitySwitch() {
         var config=new BossConfigEntity();config.setSalary("[10-20K]");config.setExpectedSalaryMin(15);config.setExpectedSalaryMax(25);
         config.setSalaryPolicy(new com.getjobs.worker.boss.BossSalaryPolicy("custom",21.5,28.5));when(boss.getFirstConfig()).thenReturn(config);

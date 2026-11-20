@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Image from 'next/image'
 import { createPortal } from 'react-dom'
-import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiUpload, BiZoomIn, BiX } from 'react-icons/bi'
+import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiUpload, BiDownload, BiZoomIn, BiX } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -12,7 +12,7 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useWorkspaceEditor, useWorkspaceEdits, WorkspaceSaveBar } from '@/app/components/WorkspaceEdits'
 import { writeWorkspaceJson } from '@/lib/workspace-save'
-import { LayoutDashboard, SlidersHorizontal, Sparkles, MessageSquare, ShieldBan, ChartNoAxesCombined, UsersRound, ArrowUpRight, MapPin, Check, FileText } from 'lucide-react'
+import { LayoutDashboard, SlidersHorizontal, Sparkles, MessageSquare, MessageCircleMore, ShieldBan, ChartNoAxesCombined, UsersRound, ArrowUpRight, MapPin, Check, FileText } from 'lucide-react'
 import type { ReactNode } from 'react'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import { API_BASE } from '@/lib/api'
@@ -22,6 +22,9 @@ import DeliveryProgress from './DeliveryProgress'
 import BossReviewPanel from './BossReviewPanel'
 import BossCityPlan from './BossCityPlan'
 import BossBlacklistCopy from './BossBlacklistCopy'
+import BossFollowUpSettings from './BossFollowUpSettings'
+import { defaultFollowUpPolicy, followUpError, type FollowUpPolicy } from '@/lib/boss-follow-up'
+import type { useBossFollowUp } from '@/lib/use-boss-follow-up'
 import BossHrActivitySettings, { defaultHrActivityPolicy, type HrActivityPolicy } from './BossHrActivitySettings'
 import BossSalarySettings from './BossSalarySettings'
 import { defaultSalaryPolicy, salaryPolicyError, type SalaryPolicy } from '@/lib/boss-salary'
@@ -49,6 +52,7 @@ interface BossConfig {
   sendImgResume?: number
   allowRepeatChat?: number
   repeatChatMessages?: string
+  followUpPolicy?: FollowUpPolicy
   filterDeadHr?: number
   hrActivityPolicy?: HrActivityPolicy
   deadStatus?: string
@@ -79,6 +83,10 @@ interface BlacklistItem {
   id: number
   value: string
   type: string
+}
+
+function normalizeBlacklist(items: BlacklistItem[]): BlacklistItem[] {
+  return items.map(item => item.type === 'boss' ? { ...item, type: 'company' } : item)
 }
 
 interface ResumeImageInfo {
@@ -112,17 +120,23 @@ function toBracketList(list: string[]): string {
 
 
 export default function BossPage() {
-  return <AccountsWorkspace>{(accountId, queue, accountName, management, initialSection) => <BossAccountPage key={accountId} accountId={accountId} queue={queue} accountName={accountName} management={management} initialSection={initialSection} />}</AccountsWorkspace>
+  return <AccountsWorkspace>{(accountId, queue, accountName, management, initialSection, followUp) => <BossAccountPage key={accountId}
+    accountId={accountId} queue={queue} accountName={accountName} management={management} initialSection={initialSection} followUp={followUp} />}</AccountsWorkspace>
 }
 
-function BossAccountPage({ accountId, queue, accountName, management, initialSection }: { accountId: number; queue: BossQueue | null; accountName: string; management: ReactNode; initialSection: string }) {
+function BossAccountPage({ accountId, queue, accountName, management, initialSection, followUp }: {
+  accountId: number; queue: BossQueue | null; accountName: string; management: ReactNode; initialSection: string
+  followUp: ReturnType<typeof useBossFollowUp>
+}) {
   const [section, setSection] = useState(initialSection)
   const { saving, editors } = useWorkspaceEdits()
   const hasUnsaved = editors.some(editor => editor.dirty)
   const editorsReady = editors.length >= 3 && editors.every(editor => editor.ready)
   const [savedDraft, setSavedDraft] = useState<string | null>(null)
   const [blacklistError, setBlacklistError] = useState('')
-  const [blacklistPending, setBlacklistPending] = useState(false)
+  const [blacklistNotice, setBlacklistNotice] = useState('')
+  const [blacklistPending, setBlacklistPending] = useState<'edit' | 'copy' | 'import' | 'export' | null>(null)
+  const blacklistFileInput = useRef<HTMLInputElement>(null)
   const [config, setConfig] = useState<BossConfig>({
     keywords: '',
     cityCode: '',
@@ -168,8 +182,12 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
   const isDelivering = actualQueue ? actualQueue.isRunning && actualQueue.activeAccountId === accountId : (taskStatus?.isRunning ?? false)
   const isStopping = actualQueue?.state === 'stopping' || taskStatus?.progress.state === 'stopping'
   const [deliveryCommand, setDeliveryCommand] = useState<'start' | 'stop' | null>(null)
-  const isBusy = actualQueue?.isRunning ?? taskStatus?.busy ?? isDelivering
-  const locked = actualQueue ? actualQueue.isRunning && actualQueue.items.some(item => item.accountId === accountId) : (taskStatus?.locked ?? false)
+  const isFollowing = followUp.activeAccountId === accountId
+  const deliveryBusy = actualQueue?.isRunning ?? taskStatus?.busy ?? isDelivering
+  const isBusy = deliveryBusy || followUp.activeAccountId !== null || followUp.command === 'start'
+  const deliveryLocked = actualQueue ? actualQueue.isRunning && actualQueue.items.some(item => item.accountId === accountId) : (taskStatus?.locked ?? false)
+  const locked = deliveryLocked || isFollowing
+  const blacklistEditingDisabled = locked || saving || blacklistPending !== null
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   // title 可选：这个弹框既用于保存结果，也用于投递启动失败等提示
@@ -363,12 +381,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
         setSelectedSalary(toCodes(data.options.salary || [], parseListString(data.config?.salary)))
       }
       if (data.blacklist) {
-        // 兼容处理：将type为'boss'的旧数据视为'company'
-        const normalizedBlacklist = data.blacklist.map((item: BlacklistItem) => ({
-          ...item,
-          type: item.type === 'boss' ? 'company' : item.type
-        }))
-        setBlacklist(normalizedBlacklist)
+        setBlacklist(normalizeBlacklist(data.blacklist))
       }
     } catch (error) {
       console.error('Failed to fetch data:', error)
@@ -395,7 +408,11 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
   }, [loading, configError, savedDraft, currentDraft])
   const cityRule = config.citySwitchPolicy || defaultCityPolicy
   const hrDays = (config.hrActivityPolicy || defaultHrActivityPolicy).maxDays
+  const followUpPolicy = config.followUpPolicy || defaultFollowUpPolicy
+  const followUpMessages = config.repeatChatMessages ?? ''
+  const followUpValidation = followUpError(followUpPolicy, followUpMessages)
   const baseValidation = salaryPolicyError(config.salaryPolicy || defaultSalaryPolicy)
+    || followUpValidation
     || (!Number.isInteger(hrDays) || hrDays < 1 || hrDays > 365 ? 'HR 最近活跃范围须为 1 至 365 的整数天数。' : '')
     || (!citySequence(config.cityCode).length ? '请至少选择一个投递城市。' : '')
     || (!Number.isInteger(cityRule.windowSize) || cityRule.windowSize < 5 || cityRule.windowSize > 200 || !Number.isInteger(cityRule.maxNewJobs) || cityRule.maxNewJobs < 0 || cityRule.maxNewJobs >= cityRule.windowSize ? '城市观察样本须为 5–200 的整数，新增阈值须为小于样本数的非负整数。' : '')
@@ -407,7 +424,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
     setSelectedStage(previous.selectedStage); setSelectedSalary(previous.selectedSalary)
   }
   useWorkspaceEditor({
-    id: `config-${accountId}`, label: '投递与基础筛选',
+    id: `config-${accountId}`, label: '投递与跟进设置',
     ready: !loading && !configError && savedDraft !== null,
     dirty: savedDraft !== null && currentDraft !== savedDraft, validationError: baseValidation,
     reset: () => { if (savedDraft) restoreDraft(savedDraft) },
@@ -426,10 +443,9 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
     },
   })
   const refreshBlacklist = async () => {
-    const response = await fetch(bossUrl('/api/boss/config', accountId), { cache: 'no-store' })
+    const response = await fetch(bossUrl('/api/boss/config/blacklist', accountId), { cache: 'no-store' })
     if (!response.ok) throw new Error('黑名单刷新失败，请重试')
-    const data = await response.json()
-    setBlacklist((data.blacklist || []).map((item: BlacklistItem) => ({ ...item, type: item.type === 'boss' ? 'company' : item.type })))
+    setBlacklist(normalizeBlacklist(await response.json()))
   }
 
   const handleResumeImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -491,27 +507,81 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
   )
 
   const handleAddBlacklist = async () => {
-    if (!newBlacklistKeyword.trim() || blacklistPending || locked || saving) return
-    setBlacklistPending(true); setBlacklistError('')
+    if (!newBlacklistKeyword.trim() || blacklistEditingDisabled) return
+    setBlacklistPending('edit'); setBlacklistError(''); setBlacklistNotice('')
     try {
       await writeWorkspaceJson(bossUrl('/api/boss/config/blacklist', accountId), { value: newBlacklistKeyword.trim(), type: blacklistType }, 'POST')
       setNewBlacklistKeyword(''); await refreshBlacklist()
     } catch (error) { setBlacklistError(error instanceof Error ? error.message : '添加黑名单失败') }
-    finally { setBlacklistPending(false) }
+    finally { setBlacklistPending(null) }
   }
   const handleDeleteBlacklist = async (id: number) => {
-    if (blacklistPending || locked || saving) return
-    setBlacklistPending(true); setBlacklistError('')
+    if (blacklistEditingDisabled) return
+    setBlacklistPending('edit'); setBlacklistError(''); setBlacklistNotice('')
     try {
       const response = await fetch(bossUrl(`/api/boss/config/blacklist/${id}`, accountId), { method: 'DELETE' })
       if (!response.ok) throw new Error('删除黑名单失败')
       await refreshBlacklist()
     } catch (error) { setBlacklistError(error instanceof Error ? error.message : '删除黑名单失败') }
-    finally { setBlacklistPending(false) }
+    finally { setBlacklistPending(null) }
+  }
+
+  const handleImportBlacklist = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file || blacklistEditingDisabled) return
+    setBlacklistError('')
+    setBlacklistNotice('')
+    if (file.size > 10 * 1024 * 1024) {
+      setBlacklistError('黑名单文件大小不能超过 10 MB。')
+      return
+    }
+
+    const body = new FormData()
+    body.append('file', file)
+    setBlacklistPending('import')
+    try {
+      const response = await fetch(bossUrl('/api/boss/config/blacklist/import', accountId), { method: 'POST', body })
+      const result = await response.json().catch(() => null)
+      if (!response.ok || !Array.isArray(result?.blacklist)) {
+        throw new Error(result?.message || result?.detail || '导入黑名单失败，请检查文件后重试')
+      }
+      setBlacklist(normalizeBlacklist(result.blacklist))
+      setBlacklistNotice(`导入完成，新增 ${result.importedCount} 条，跳过 ${result.skippedCount} 条重复项。`)
+    } catch (error) {
+      setBlacklistError(error instanceof Error ? error.message : '导入黑名单失败，请重试')
+    } finally {
+      setBlacklistPending(null)
+    }
+  }
+
+  const handleExportBlacklist = async () => {
+    if (blacklistPending) return
+    setBlacklistError('')
+    setBlacklistNotice('')
+    setBlacklistPending('export')
+    try {
+      const response = await fetch(bossUrl('/api/boss/config/blacklist/export', accountId), { cache: 'no-store' })
+      if (!response.ok || !response.headers.get('Content-Type')?.startsWith('application/json')) {
+        throw new Error('导出黑名单失败，请检查服务连接后重试')
+      }
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'boss_blacklist.json'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error) {
+      setBlacklistError(error instanceof Error ? error.message : '导出黑名单失败，请重试')
+    } finally {
+      setBlacklistPending(null)
+    }
   }
 
   const handleStartDelivery = async () => {
-    if (hasUnsaved || !editorsReady || saving || locked) return
+    if (hasUnsaved || !editorsReady || saving || isBusy || followUp.command) return
     setDeliveryCommand('start')
     try {
       const response = await fetch(bossUrl(`/api/boss/start`, accountId), {
@@ -586,19 +656,36 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
     }
   }
 
+  const followUpBlocked = isBusy ? 'Boss 浏览器正被其他任务使用，请等待任务结束。'
+    : hasUnsaved || saving ? '请先保存当前账号的修改。'
+    : !followUp.status || !taskStatus || savedDraft === null ? '正在读取跟进状态和账号配置。'
+    : !isLoggedIn ? '请先在「账号与队列」登录当前账号。'
+    : config.debugger === 1 ? '请先关闭调试模式并保存。'
+    : !followUpMessages.trim() ? '请填写至少一条跟进消息并保存。'
+    : followUpValidation
+  const handleFollowUp = (command: 'start' | 'stop') => {
+    if (command === 'start' && (followUpBlocked || deliveryCommand)) return
+    setSection('follow-up')
+    void followUp.run(command)
+  }
+
   if (configError) return <Card><CardContent className="space-y-3 p-6"><p role="alert">{configError}</p><Button onClick={() => void fetchAllData()}>重新读取该账号配置</Button></CardContent></Card>
   if (loading) return <div className="flex min-h-64 items-center justify-center gap-3 rounded-xl border bg-card text-sm text-muted-foreground"><span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />正在读取账号配置…</div>
 
   return <div className="space-y-4">
-    <WorkspaceSaveBar locked={locked}>
-      {isDelivering ? <Button variant="destructive" disabled={!!deliveryCommand || isStopping} onClick={() => void handleStopDelivery()}><BiStop />{isStopping ? '停止中…' : '停止投递'}</Button>
-        : <Button variant="outline" disabled={saving || hasUnsaved || !editorsReady || isBusy || !taskStatus || !isLoggedIn || !!deliveryCommand} title={hasUnsaved ? '请先保存全部修改' : undefined} onClick={() => void handleStartDelivery()}><BiPlay />{deliveryCommand === 'start' ? '启动中…' : isBusy ? '队列执行中' : '开始投递'}</Button>}
+    <WorkspaceSaveBar locked={locked || !!followUp.command}>
+      {isDelivering ? <Button variant="destructive" disabled={!!deliveryCommand || isStopping} onClick={() => void handleStopDelivery()}><BiStop />{isStopping ? '正在停止投递…' : '停止投递'}</Button>
+        : <Button variant="outline" disabled={saving || hasUnsaved || !editorsReady || isBusy || !taskStatus || !isLoggedIn || !!deliveryCommand} title={hasUnsaved ? '请先保存全部修改' : undefined} onClick={() => void handleStartDelivery()}><BiPlay />{deliveryCommand === 'start' ? '正在启动投递…' : '开始投递'}</Button>}
+      {isFollowing ? <Button variant="destructive" disabled={!!followUp.command || followUp.status?.stopping} onClick={() => handleFollowUp('stop')}><BiStop />{followUp.status?.stopping || followUp.command === 'stop' ? '正在停止跟进…' : '停止跟进'}</Button>
+        : <Button variant="outline" disabled={!!followUpBlocked || !!followUp.command || !!deliveryCommand} title={followUpBlocked || undefined} onClick={() => handleFollowUp('start')}><BiPlay />{followUp.command === 'start' ? '正在启动跟进…' : '开始跟进'}</Button>}
     </WorkspaceSaveBar>
+    {followUp.commandError && <p role="alert" className="rounded-lg border border-red-300 p-3 text-sm text-red-600">{followUp.commandError}</p>}
     <Tabs value={section} onValueChange={setSection}>
       <TabsList className="workspace-tabs" aria-label="Boss 工作台分区">
         {([
           ['overview', '任务概览', LayoutDashboard], ['filters', '投递筛选', SlidersHorizontal],
           ['targeting', '精准审核', Sparkles], ['messages', '招呼语与简历', MessageSquare],
+          ['follow-up', '定期跟进', MessageCircleMore],
           ['blacklist', '黑名单', ShieldBan], ['analytics', '投递分析', ChartNoAxesCombined],
           ['accounts', '账号与队列', UsersRound],
         ] as const).map(([value, label, Icon]) => <TabsTrigger key={value as string} value={value as string}><Icon className="mr-2 h-4 w-4" />{label as string}</TabsTrigger>)}
@@ -709,7 +796,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                   onChange={setSelectedSalary}
                   placeholder="选择薪资待遇"
                 />
-                <p className="text-xs text-muted-foreground">网站搜索和本地薪资精筛使用相同档位；多选时匹配任一档位即可，选择“不限”则不按薪资过滤。</p>
+                <p className="text-xs text-muted-foreground">多选时匹配任一档位即可。选择“不限”时仍会检查已填写的岗位薪资上下限。</p>
                 </>}
               </div>
               <div className="space-y-2">
@@ -788,38 +875,6 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                     className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm leading-7 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                   <p className="text-sm text-muted-foreground">首次沟通使用此文本；启用 AI 招呼语后，优先使用生成内容。修改后统一保存，下次启动时生效。</p>
-                </div>
-</CardContent></Card>
-            <Card><CardHeader><CardTitle>重复沟通</CardTitle><CardDescription>控制是否向已沟通的 Boss 再次发送消息。</CardDescription></CardHeader><CardContent className="space-y-4">                <div className="flex flex-col gap-4 rounded-lg border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="space-y-1">
-                    <Label htmlFor="allowRepeatChat" className="text-base font-medium">向已沟通 Boss 再次发送消息</Label>
-                    <p className="text-xs leading-6 text-muted-foreground">
-                      开启并填写跟进消息后，遇到“继续沟通”或“沟通新职位”会发送一条跟进消息。更换沟通职位时，BOSS 会通知招聘者。关闭时跳过该岗位。
-                    </p>
-                  </div>
-                  <button
-                    id="allowRepeatChat"
-                    type="button"
-                    role="switch"
-                    aria-checked={config.allowRepeatChat === 1}
-                    aria-label="向已沟通 Boss 再次发送消息"
-                    onClick={() => setConfig(prev => ({ ...prev, allowRepeatChat: prev.allowRepeatChat === 1 ? 0 : 1 }))}
-                    className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${config.allowRepeatChat === 1 ? 'bg-primary' : 'bg-muted-foreground/40'}`}
-                  >
-                    <span aria-hidden="true" className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${config.allowRepeatChat === 1 ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                  </button>
-                </div>
-                <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
-                  <Label htmlFor="repeatChatMessages">重复沟通消息（每行一条）</Label>
-                  <textarea
-                    id="repeatChatMessages"
-                    rows={4}
-                    value={config.repeatChatMessages ?? ''}
-                    onChange={event => setConfig(prev => ({ ...prev, repeatChatMessages: event.target.value }))}
-                    placeholder="每行填写一条想发送的消息"
-                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm leading-7 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                  <p className="text-xs leading-6 text-muted-foreground">可自由编辑、添加或删除。每次从非空行中随机选一条，可能重复；全部清空时跳过重复沟通。点击上方“保存全部修改”后，下次启动投递生效。</p>
                 </div>
 </CardContent></Card>
           </fieldset>
@@ -918,19 +973,40 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                 </div></CardContent></Card></fieldset></div>
         </div>
       </TabsContent>
-      <TabsContent value="blacklist" forceMount className="workspace-panel"><fieldset disabled={locked || saving} className="disabled:opacity-60">        {/* 黑名单管理 */}
+      <TabsContent value="blacklist" forceMount className="workspace-panel">
         <Card className="animate-in fade-in slide-in-from-bottom-8 duration-700">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BiSearch className="text-primary" />
-              黑名单管理 ({blacklist.length} 条)
-            </CardTitle>
-            <CardDescription>添加、删除或复制后立即生效，无需再点击保存。投递任务中不可修改。</CardDescription>
+          <CardHeader className="gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-2">
+              <CardTitle className="flex items-center gap-2">
+                <BiSearch className="text-primary" />
+                黑名单管理 ({blacklist.length} 条)
+              </CardTitle>
+              <CardDescription>{locked ? '当前账号有投递或跟进任务，可导出黑名单。' : '导入 JSON 文件时合并到当前账号，自动跳过重复项。黑名单修改后立即保存。'}</CardDescription>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <input ref={blacklistFileInput} type="file" accept=".json,application/json" aria-label="选择黑名单 JSON 文件" onChange={handleImportBlacklist} disabled={blacklistEditingDisabled} hidden />
+              <Button type="button" size="sm" variant="outline" disabled={blacklistEditingDisabled} onClick={() => blacklistFileInput.current?.click()}>
+                <BiUpload />{blacklistPending === 'import' ? '正在导入…' : '导入黑名单'}
+              </Button>
+              <Button type="button" size="sm" variant="outline" disabled={blacklistPending !== null} onClick={handleExportBlacklist}>
+                <BiDownload />{blacklistPending === 'export' ? '正在导出…' : '导出黑名单'}
+              </Button>
+            </div>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-6">
-              {/* 添加黑名单 */}
-              <BossBlacklistCopy accountId={accountId} locked={locked || saving} onCopied={setBlacklist} />
+          <CardContent className="space-y-3">
+            {blacklistNotice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{blacklistNotice}</p>}
+            {blacklistError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{blacklistError}</p>}
+            <fieldset disabled={blacklistEditingDisabled} className="min-w-0 space-y-6 disabled:opacity-60">
+              <BossBlacklistCopy
+                accountId={accountId}
+                locked={blacklistEditingDisabled}
+                pending={blacklistPending === 'copy'}
+                onPendingChange={pending => {
+                  setBlacklistPending(pending ? 'copy' : null)
+                  if (pending) { setBlacklistError(''); setBlacklistNotice('') }
+                }}
+                onCopied={items => setBlacklist(normalizeBlacklist(items))}
+              />
               <div className="flex flex-wrap gap-2">
                 <Select
                   value={blacklistType}
@@ -951,7 +1027,7 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                     }
                   }}
                 />
-                <Button disabled={blacklistPending} onClick={handleAddBlacklist} className="whitespace-nowrap">
+                <Button onClick={handleAddBlacklist} className="whitespace-nowrap">
                   <BiPlus />
                   添加
                 </Button>
@@ -979,7 +1055,6 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                           <span className="text-sm">{item.value}</span>
                           <Button
                             variant="ghost"
-                            disabled={blacklistPending}
                             aria-label={`删除黑名单 ${item.value}`}
                             size="sm"
                             onClick={() => handleDeleteBlacklist(item.id)}
@@ -1013,7 +1088,6 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                           <span className="text-sm">{item.value}</span>
                           <Button
                             variant="ghost"
-                            disabled={blacklistPending}
                             aria-label={`删除黑名单 ${item.value}`}
                             size="sm"
                             onClick={() => handleDeleteBlacklist(item.id)}
@@ -1047,7 +1121,6 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                           <span className="text-sm">{item.value}</span>
                           <Button
                             variant="ghost"
-                            disabled={blacklistPending}
                             aria-label={`删除黑名单 ${item.value}`}
                             size="sm"
                             onClick={() => handleDeleteBlacklist(item.id)}
@@ -1061,14 +1134,21 @@ function BossAccountPage({ accountId, queue, accountName, management, initialSec
                   </div>
                 </div>
               </div>
-            </div>
+            </fieldset>
           </CardContent>
         </Card>
-
-        
-</fieldset>{blacklistError && <p role="alert" className="mt-3 text-sm text-red-600">{blacklistError}</p>}</TabsContent>
+      </TabsContent>
       <TabsContent value="analytics" className="workspace-panel">
         <AnalysisContent accountId={accountId} progressKey={bossHistoryProgressKey(taskStatus?.progress)} progressConnection={progressConnection} />
+      </TabsContent>
+      <TabsContent value="follow-up" forceMount className="workspace-panel">
+        <div className="section-heading"><div><h2>定期跟进</h2><p>跟进已投递且未收到回复的会话，包含未读和已读未回。</p></div></div>
+        {!isFollowing && followUpBlocked && <p className="mb-4 text-sm text-muted-foreground">{followUpBlocked}</p>}
+        <BossFollowUpSettings accountId={accountId} policy={followUpPolicy} messages={followUpMessages}
+          disabled={locked || saving || !!followUp.command} status={followUp.status} loadError={followUp.loadError}
+          runningAccountId={followUp.activeAccountId}
+          onPolicyChange={followUpPolicy => setConfig(previous => ({ ...previous, followUpPolicy }))}
+          onMessagesChange={repeatChatMessages => setConfig(previous => ({ ...previous, repeatChatMessages }))} />
       </TabsContent>
       <TabsContent value="accounts" forceMount className="workspace-panel"><div className="section-heading"><div><h2>账号与队列</h2><p>独立登录、独立配置。按设定顺序执行，A 完成后自动切换到 B。</p></div><Button variant="outline" disabled={isBusy || saving || !!deliveryCommand} onClick={() => setShowLogoutDialog(true)}><BiLogOut />退出当前账号登录</Button></div>{management}</TabsContent>
     </Tabs>

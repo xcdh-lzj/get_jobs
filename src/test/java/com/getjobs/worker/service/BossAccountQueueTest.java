@@ -6,6 +6,7 @@ import com.getjobs.worker.manager.*;
 import com.microsoft.playwright.Page;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.web.server.ResponseStatusException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -20,7 +21,10 @@ class BossAccountQueueTest {
     private final BossAccountService accounts=mock(BossAccountService.class);
     private final BossBrowserSessions browsers=mock(BossBrowserSessions.class);
     private final BossAccountLocks locks=new BossAccountLocks();
+    private final BossFollowUpStore followUpStore = mock(BossFollowUpStore.class);
+    private final BossFollowUpWorker followUps = mock(BossFollowUpWorker.class);
     private final BossJobService jobs=new BossJobService(manager,configs,provider,accounts,browsers,locks);
+    private final BossFollowUpService followUp = new BossFollowUpService(manager, configs, accounts, browsers, locks, followUpStore, followUps);
     private final Map<Long,Boss> workers=new HashMap<>();
     private final List<Long> execution=new CopyOnWriteArrayList<>();
 
@@ -53,6 +57,74 @@ class BossAccountQueueTest {
     private void start(List<Long> ids,CountDownLatch done) {
         assertTrue(jobs.startQueue(ids,m -> { if (!jobs.isRunning()) done.countDown(); }));
     }
+    @Test void scheduledFollowUpRequiresOptInAndLeavesDeliveryProgressAlone() throws Exception {
+        var config = new BossConfig();
+        config.setAllowRepeatChat(true);
+        when(manager.isInitialized()).thenReturn(true);
+        when(accounts.list()).thenReturn(List.of(new BossAccountService.Account(2, "示例账号", false)));
+        when(configs.getBossConfig()).thenReturn(config);
+        followUp.checkSchedule();
+        verifyNoInteractions(followUpStore, followUps);
+
+        var policy = new BossFollowUpPolicy(true, 48, 24, 20, null);
+        config.setFollowUpPolicy(policy);
+        when(followUpStore.due(eq(2L), eq(policy), anyLong())).thenReturn(true);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var finished = new CountDownLatch(1);
+        when(followUps.execute(any(), same(config), any(), any())).thenAnswer(call -> {
+            assertEquals(2L, BossAccountContext.id());
+            assertTrue(locks.busy(2L));
+            entered.countDown();
+            assertTrue(release.await(5, TimeUnit.SECONDS));
+            return new BossFollowUpWorker.Result("completed", 1, 1, 0, "已跟进一条");
+        });
+        doAnswer(call -> { finished.countDown(); return null; })
+                .when(followUpStore).finish(2, "completed", 1, 1, 0, "已跟进一条");
+        try {
+            followUp.checkSchedule();
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(2L, followUp.status(2).activeAccountId());
+            assertNull(followUp.status(1).progress());
+            assertEquals("idle", jobs.getQueue().state());
+            assertThrows(ResponseStatusException.class, () -> jobs.startDelivery(2, ignored -> {}));
+        } finally { release.countDown(); }
+        assertTrue(finished.await(5, TimeUnit.SECONDS));
+        assertTrue(execution.isEmpty());
+    }
+
+    @Test void manualFollowUpWorksWithAutomaticFollowUpOffAndHasItsOwnStopRequest() throws Exception {
+        var config = new BossConfig();
+        assertFalse(config.getFollowUpPolicy().enabled());
+        when(configs.getBossConfig()).thenReturn(config);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var done = new CountDownLatch(1);
+        when(followUps.execute(any(), same(config), any(), any())).thenAnswer(call -> {
+            var stop = call.<java.util.function.Supplier<Boolean>>getArgument(2);
+            entered.countDown();
+            assertTrue(release.await(5, TimeUnit.SECONDS));
+            assertTrue(stop.get());
+            return new BossFollowUpWorker.Result("stopped", 0, 0, 0, "跟进已停止");
+        });
+        doAnswer(call -> { done.countDown(); return null; })
+                .when(followUpStore).finish(2, "stopped", 0, 0, 0, "跟进已停止");
+        try {
+            followUp.start(2);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            jobs.stopDelivery();
+            assertFalse(followUp.status(2).stopping());
+            assertFalse(followUp.stop(1));
+            assertTrue(followUp.stop(2));
+            assertTrue(followUp.status(2).stopping());
+        } finally { release.countDown(); }
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertNull(followUp.status(2).activeAccountId());
+        assertFalse(locks.busy(2L));
+        verify(followUpStore, never()).due(anyLong(), any(), anyLong());
+        verifyNoInteractions(provider);
+    }
+
     @Test void completesAccountsInChosenOrderWithSeparateProgressAndProfiles() throws Exception {
         var done=finished(); start(List.of(2L,1L),done);
         assertTrue(done.await(5,TimeUnit.SECONDS));

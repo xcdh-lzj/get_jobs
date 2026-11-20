@@ -3,31 +3,51 @@ package com.getjobs.worker.boss;
 import java.util.*;
 import java.util.function.Function;
 
-/** 由可见薪资设置派生的月薪区间；多选保留各段区间，不能把中间未选范围也放行。 */
-public record BossSalarySelection(List<Range> ranges) {
+/** 期望月薪区间和对岗位标注薪资的额外上下限。 */
+public record BossSalarySelection(List<Range> ranges, Double minPostedMonthlyK, Double maxPostedMonthlyK) {
     public record Range(Double minK, Double maxK) {
         boolean overlaps(double min, double max) {
             return (minK == null || max >= minK) && (maxK == null || min <= maxK);
         }
     }
     public BossSalarySelection { ranges = List.copyOf(ranges); }
-    public boolean unrestricted() { return ranges.isEmpty(); }
+    public BossSalarySelection(List<Range> ranges) { this(ranges, null, null); }
+    public boolean unrestricted() { return ranges.isEmpty() && !hasPostedLimits(); }
+    public boolean hasPostedLimits() { return minPostedMonthlyK != null || maxPostedMonthlyK != null; }
     public boolean overlaps(double min, double max) {
-        return unrestricted() || ranges.stream().anyMatch(r -> r.overlaps(min,max));
+        return ranges.isEmpty() || ranges.stream().anyMatch(r -> r.overlaps(min,max));
     }
     public Double minimumK() {
-        return unrestricted() || ranges.stream().anyMatch(r -> r.minK()==null) ? null
+        return ranges.isEmpty() || ranges.stream().anyMatch(r -> r.minK()==null) ? null
                 : ranges.stream().mapToDouble(Range::minK).min().orElseThrow();
     }
     public Double maximumK() {
-        return unrestricted() || ranges.stream().anyMatch(r -> r.maxK()==null) ? null
+        return ranges.isEmpty() || ranges.stream().anyMatch(r -> r.maxK()==null) ? null
                 : ranges.stream().mapToDouble(Range::maxK).max().orElseThrow();
     }
     public String describe() {
-        if(unrestricted())return "不限";
+        if(ranges.isEmpty())return "不限";
         return ranges.stream().map(r -> r.minK()==null?number(r.maxK())+"K以下":r.maxK()==null?number(r.minK())+"K以上":number(r.minK())+"–"+number(r.maxK())+"K")
                 .collect(java.util.stream.Collectors.joining("、"));
     }
+
+    public String rejectionReason(String salary, BossSalary.Monthly monthly) {
+        if (unrestricted()) return null;
+        if (monthly == null) {
+            return salary != null && salary.contains("面议")
+                    ? "岗位薪资面议，无法确认符合月薪条件，已自动跳过"
+                    : "补读详情后仍无法确认月薪符合设置，已自动跳过";
+        }
+        if (maxPostedMonthlyK != null && monthly.maxK() > maxPostedMonthlyK) {
+            return "岗位最高月薪 " + number(monthly.maxK()) + "K 超过设置的 " + number(maxPostedMonthlyK) + "K（岗位 " + salary + "）";
+        }
+        if (minPostedMonthlyK != null && monthly.minK() < minPostedMonthlyK) {
+            return "岗位最低月薪 " + number(monthly.minK()) + "K 低于设置的 " + number(minPostedMonthlyK) + "K（岗位 " + salary + "）";
+        }
+        return overlaps(monthly.minK(), monthly.maxK()) ? null
+                : "薪资区间与设置无交集（岗位 " + salary + "，设置 " + describe() + "）";
+    }
+
     private static String number(Double value){return java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();}
     public static BossSalarySelection fromStored(String raw, Function<String,String> nameForCode) {
         if(raw==null || raw.isBlank())return new BossSalarySelection(List.of());

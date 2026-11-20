@@ -59,6 +59,10 @@ public class BossConfigEntity {
     private Integer allowRepeatChat;
     /** 重复沟通消息，每行一条。 */
     private String repeatChatMessages;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String followUpSettings;
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private com.getjobs.worker.boss.BossFollowUpPolicy followUpPolicy;
     /** 是否过滤不在线HR（1=启用，0=关闭） */
     private Integer filterDeadHr;
     /** HR不在线状态列表（逗号或括号列表） */

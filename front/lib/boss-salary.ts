@@ -1,9 +1,21 @@
-export interface SalaryPolicy { mode: 'selection' | 'custom'; minMonthlyK: number | null; maxMonthlyK: number | null }
+export interface SalaryPolicy {
+  mode: 'selection' | 'custom'
+  minMonthlyK: number | null
+  maxMonthlyK: number | null
+  minPostedMonthlyK?: number | null
+  maxPostedMonthlyK?: number | null
+}
 export const defaultSalaryPolicy: SalaryPolicy = { mode: 'selection', minMonthlyK: null, maxMonthlyK: null }
 
+const invalidAmount = (amount: number | null | undefined) =>
+  amount != null && (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000)
+
 export function salaryPolicyError(policy: SalaryPolicy): string {
+  const { minPostedMonthlyK, maxPostedMonthlyK } = policy
+  if (invalidAmount(minPostedMonthlyK) || invalidAmount(maxPostedMonthlyK)) return '岗位薪资上下限须为大于 0 的数值，单位 K/月。'
+  if (minPostedMonthlyK != null && maxPostedMonthlyK != null && minPostedMonthlyK > maxPostedMonthlyK) return '岗位最低月薪的限制不能高于最高月薪的限制。'
   if (policy.mode !== 'custom') return ''
-  if ([policy.minMonthlyK, policy.maxMonthlyK].some(n => n !== null && (!Number.isFinite(n) || n <= 0 || n > 1000000))) return '自定义月薪须为大于 0 的数值，单位 K/月；留空表示不限制该边界。'
+  if (invalidAmount(policy.minMonthlyK) || invalidAmount(policy.maxMonthlyK)) return '自定义月薪须为大于 0 的数值，单位 K/月。'
   if (policy.minMonthlyK !== null && policy.maxMonthlyK !== null && policy.minMonthlyK > policy.maxMonthlyK) return '最低月薪不能高于最高月薪。'
   return ''
 }

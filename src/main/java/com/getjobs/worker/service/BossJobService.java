@@ -48,23 +48,20 @@ public class BossJobService implements JobPlatformService {
         return startDelivery(BossAccountContext.id(), callback);
     }
     public boolean startDelivery(long accountId, Consumer<JobProgressMessage> callback) {
-        return start(List.of(accountId), false, callback, true);
+        return start(List.of(accountId), "single", callback, true);
     }
     public boolean startReviewOnly(long accountId, Consumer<JobProgressMessage> callback) {
-        return start(List.of(accountId), false, callback, true, true);
+        return start(List.of(accountId), "review_only", callback, true);
     }
     public boolean startQueue(List<Long> accountIds, Consumer<JobProgressMessage> callback) {
-        return start(accountIds, true, callback, true);
+        return start(accountIds, "queue", callback, true);
     }
     @Override public void executeDelivery(Consumer<JobProgressMessage> callback) {
-        if (!start(List.of(BossAccountContext.id()), false, callback, false))
+        if (!start(List.of(BossAccountContext.id()), "single", callback, false))
             callback.accept(JobProgressMessage.warning(PLATFORM,"Boss 任务已在运行中"));
     }
 
-    private boolean start(List<Long> ids, boolean queue, Consumer<JobProgressMessage> nextCallback, boolean async) {
-        return start(ids, queue, nextCallback, async, false);
-    }
-    private boolean start(List<Long> ids, boolean queue, Consumer<JobProgressMessage> nextCallback, boolean async, boolean reviewOnly) {
+    private boolean start(List<Long> ids, String nextMode, Consumer<JobProgressMessage> nextCallback, boolean async) {
         synchronized (this) { if (busy) return false; }
         if (ids==null || ids.isEmpty() || ids.size()>20 || ids.stream().anyMatch(Objects::isNull)
                     || ids.stream().distinct().count()!=ids.size())
@@ -83,12 +80,13 @@ public class BossJobService implements JobPlatformService {
                     }
                     next.add(new QueueItem(id,account.name(),"pending",0,"等待执行"));
                 }
-                items=next; mode=reviewOnly?"review_only":queue?"queue":"single"; callback=nextCallback;
-                busy=true; stopRequested=false; queueState="running"; queueMessage="按列表顺序执行";
+                items=next; mode=nextMode; callback=nextCallback;
+                busy=true; stopRequested=false; queueState="running";
+                queueMessage="按列表顺序执行";
                 prepare(0);
             } catch (RuntimeException e) { locks.release(); throw e; }
         }
-        publish(JobProgressMessage.info(PLATFORM,queue?"Boss 账号队列已启动":"Boss 任务已启动"));
+        publish(JobProgressMessage.info(PLATFORM,"queue".equals(nextMode)?"Boss 账号队列已启动":"Boss 任务已启动"));
         if (async) {
             try { CompletableFuture.runAsync(this::executeReserved); }
             catch (RuntimeException e) { abortStartup(e); throw e; }
@@ -114,7 +112,8 @@ public class BossJobService implements JobPlatformService {
                     if (stopRequested) { finalState="stopped"; break; }
                     item=items.get(i);
                 }
-                runDelivery(item.accountId(),progress(item.accountId()).snapshot().taskId());
+                String id = progress(item.accountId()).snapshot().taskId();
+                runDelivery(item.accountId(), id);
                 synchronized (this) {
                     var snapshot=progress(item.accountId()).snapshot();
                     items.set(i,new QueueItem(item.accountId(),item.accountName(),snapshot.state(),snapshot.deliveredCount(),snapshot.message()));

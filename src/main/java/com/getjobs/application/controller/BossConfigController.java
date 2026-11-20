@@ -59,6 +59,7 @@ public class BossConfigController {
         config.setCitySwitchPolicy(citySettings.policy());
         config.setHrActivityPolicy(hrSettings.policy());
         config.setSalaryPolicy(com.getjobs.worker.boss.BossSalaryPolicy.of(config));
+        config.setFollowUpPolicy(com.getjobs.worker.boss.BossFollowUpPolicy.read(config.getFollowUpSettings()));
 
         // 获取所有选项并按类型分组
         if (config.getRepeatChatMessages() == null) {

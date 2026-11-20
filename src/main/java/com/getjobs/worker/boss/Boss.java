@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
@@ -400,6 +401,7 @@ public class Boss {
             // 3. 逐个遍历所有岗位
             Locator cards = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
             int count = cards.count();
+            var salarySelection = config.getSalarySelection();
             for (int i = 0; i < count; i++) {
                 if(endLowYieldKeyword(keyword))break;
                 // 检查是否需要停止
@@ -542,6 +544,21 @@ public class Boss {
                     job.setCompanyName(bossCompany != null ? bossCompany : "");
                     job.setRecruiter(bossName != null ? bossName : "");
                     job.setJobInfo(jobDesc != null ? jobDesc : "");
+
+                    if (salarySelection != null && salarySelection.hasPostedLimits()) {
+                        String detailUrl = currentJobDetailUrl();
+                        job.setHref(detailUrl);
+                        // 详情接口响应必须和当前岗位链接一致，才可用其中的薪资做判断。
+                        if (jobEncryptId == null || !jobEncryptId.equals(extractEncryptId(detailUrl))) job.setSalary("");
+                        var monthly = BossSalary.parse(job.getSalary());
+                        String reason = monthly == null ? null : salarySelection.rejectionReason(job.getSalary(), monthly);
+                        if (reason != null) {
+                            jobYield = BossCityYieldMonitor.Outcome.UNAVAILABLE;
+                            recordLegacyJobResult(jobEncryptId, "已过滤", reason, null);
+                            progressCallback.accept("已过滤：" + jobName + " · " + reason, null, null);
+                            continue;
+                        }
+                    }
 
                     // 输出
                     progressCallback.accept("正在投递：" + jobName, i + 1, count);
@@ -1120,7 +1137,7 @@ public class Boss {
                 if(reviewStopped())return;
                 reviewedKeys.add(prefix+candidate.key());
                 boolean deliveredBefore=bossService.wasDelivered(candidate);existing.put(candidate.key(),deliveredBefore);
-                var basic=deliveredBefore && !Boolean.TRUE.equals(config.getAllowRepeatChat())
+                var basic=deliveredBefore
                         ? BossReviewResult.reject(candidate,"当前账号已有投递记录，未重复沟通",candidate.title())
                         : reviews.preScreen(candidate,reviewContext);
                 if(basic!=null){reviews.record(reviewRunId,reviewContext,basic);decisions.put(candidate.key(),basic);continue;}
@@ -1198,7 +1215,7 @@ public class Boss {
         }
         String reason = sent && !result.reason().isBlank()
                 ? lastSubmissionReason + " · " + result.reason() : lastSubmissionReason;
-        bossService.recordPrecisionJob(candidate,lastSubmissionStatus,reason,lastDeliveredAt);
+        bossService.recordPrecisionJob(candidate.withSalary(job.getSalary()),lastSubmissionStatus,reason,lastDeliveredAt);
         reviews.delivery(reviewRunId,candidate,sent?"sent":"not_sent");
         var yield=deliveredBefore?BossCityYieldMonitor.Outcome.UNAVAILABLE:lastSubmissionOutcome;
         return new PrecisionOutcome(sent,yield,true);
@@ -1254,9 +1271,8 @@ public class Boss {
             return skipSubmission("岗位未通过投递前审核");
         }
         if (detailUrl.isBlank()) {
-            Locator moreInfoBtn = page.locator("a.more-job-btn");
-            if (moreInfoBtn.count() == 0) return skipSubmission("未找到岗位详情入口");
-            detailUrl = BossReviewJob.safeDetailUrl(moreInfoBtn.first().getAttribute("href"));
+            detailUrl = currentJobDetailUrl();
+            if (detailUrl == null) return skipSubmission("未找到岗位详情入口");
             if (detailUrl.isBlank()) return skipSubmission("缺少有效岗位链接");
         }
         lastSubmissionJobId = extractEncryptId(detailUrl);
@@ -1269,11 +1285,22 @@ public class Boss {
             PlaywrightUtil.sleep(1);
             navigator.checkBlockingNotices();
 
-            // 3. 根据开关选择是否允许对已沟通过的Boss再次发送消息
+            var salarySelection = config.getSalarySelection();
+            if (salarySelection != null && salarySelection.hasPostedLimits()) {
+                String openedUrl = BossReviewJob.safeDetailUrl(detailPage.url());
+                if (!URI.create(detailUrl).getPath().equals(URI.create(openedUrl).getPath())) {
+                    return skipForSalary(job, false, "详情页面发生跳转，无法核对岗位薪资，已自动跳过");
+                }
+                String salary = BossReviewDetails.readSalaryFromHeading(detailPage);
+                if (!salary.isBlank()) job.setSalary(salary);
+                var monthly = BossSalary.parse(job.getSalary());
+                String reason = salarySelection.rejectionReason(job.getSalary(), monthly);
+                if (reason != null) return skipForSalary(job, monthly != null, reason);
+            }
+
+            // 首次投递只处理未沟通过的岗位，原会话由定期跟进任务处理。
             Locator chatBtn = detailPage.locator("a.btn-startchat, a.op-btn-chat");
             boolean foundChatBtn = false;
-            boolean repeatChat = false;
-            boolean allowRepeatChat = Boolean.TRUE.equals(config.getAllowRepeatChat());
             for (int i = 0; i < 5; i++) {
                 if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
                     log.info("停止指令已触发，结束查找聊天按钮 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
@@ -1283,17 +1310,14 @@ public class Boss {
                 if (chatBtn.count() > 0) {
                     String buttonText = chatBtn.first().textContent();
                     previouslyContacted=buttonText!=null && buttonText.contains("继续沟通");
-                    if (buttonText != null && buttonText.contains("继续沟通")
-                            && !allowRepeatChat) {
+                    if (previouslyContacted) {
                         lastSubmissionOutcome=BossCityYieldMonitor.Outcome.UNAVAILABLE;
-                        log.info("已关闭重复沟通，跳过已沟通Boss | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
+                        log.info("已有会话，跳过首次投递 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                         try { detailPage.close(); } catch (Exception ignore) {}
-                        return skipSubmission("已沟通过，当前账号关闭了重复沟通");
+                        return skipSubmission("已有会话，由定期跟进任务检查");
                     }
-                    if (buttonText != null && (buttonText.contains("立即沟通")
-                            || (buttonText.contains("继续沟通") && allowRepeatChat))) {
+                    if (buttonText != null && buttonText.contains("立即沟通")) {
                         foundChatBtn = true;
-                        repeatChat = buttonText.contains("继续沟通");
                         break;
                     }
                 }
@@ -1308,24 +1332,19 @@ public class Boss {
                 }
                 return skipSubmission("未找到可用的沟通入口");
             }
-            // “立即沟通”也可能进入已有会话，先选定跟进文案再允许确认新职位。
-            String repeatMessage = allowRepeatChat ? config.randomRepeatChatMessage() : null;
-            if (repeatChat && repeatMessage == null) {
-                log.info("重复沟通消息列表为空，跳过岗位：{}", job.getJobName());
-                try { detailPage.close(); } catch (Exception ignore) {}
-                return skipSubmission("未配置重复沟通消息");
-            }
             if (progressCallback != null) progressCallback.accept("正在打开沟通页面：" + job.getJobName(), null, null);
-            BossChatNavigator.Chat chat = navigator.open(chatBtn.first(), repeatChat,
-                    repeatMessage != null, shouldStopCallback, 20_000);
+            BossChatNavigator.Chat chat = navigator.open(chatBtn.first(), false, false, shouldStopCallback, 20_000);
             if (chat == null) return skipSubmission("未打开可用的沟通页面");
             detailPage = chat.page();
-            repeatChat = chat.repeat();
+            if (chat.repeat()) {
+                lastSubmissionOutcome = BossCityYieldMonitor.Outcome.UNAVAILABLE;
+                return skipSubmission("已有会话，由定期跟进任务检查");
+            }
             Locator inputLocator = chat.input();
 
             // 5. AI智能生成打招呼语
             String aiMessage = precision ? approvedGreetings.get(BossReviewJob.safeDetailUrl(job.getHref())) : null;
-            if (!precision && !repeatChat && Boolean.TRUE.equals(config.getEnableAI())) {
+            if (!precision && Boolean.TRUE.equals(config.getEnableAI())) {
                 String jd = job.getJobInfo();
                 if (jd != null && !jd.isEmpty()) {
                     if (progressCallback != null) progressCallback.accept("AI 正在分析岗位并生成招呼语：" + job.getJobName(), null, null);
@@ -1345,10 +1364,7 @@ public class Boss {
                 }
             }
             if(!navigator.prepareToSend(shouldStopCallback,2_000))return skipSubmission("沟通页面未就绪或任务已取消");
-            boolean switchedPosition = navigator.switchedPosition();
-            repeatChat = repeatChat || switchedPosition;
-            previouslyContacted = repeatChat;
-            String message = repeatChat ? repeatMessage : (isValidString(aiMessage) ? aiMessage : config.getSayHi());
+            String message = isValidString(aiMessage) ? aiMessage : config.getSayHi();
 
             if (progressCallback != null) progressCallback.accept("正在发送招呼语：" + job.getJobName(), null, null);
             // 6. 输入打招呼语
@@ -1389,8 +1405,7 @@ public class Boss {
             if (sendSuccess) {
                 lastSubmissionOutcome=previouslyContacted?BossCityYieldMonitor.Outcome.UNAVAILABLE:BossCityYieldMonitor.Outcome.NEW_JOB;
                 lastSubmissionStatus = "已投递";
-                lastSubmissionReason = switchedPosition ? "已切换沟通职位并发送跟进消息"
-                        : repeatChat ? "已发送重复沟通消息" : "已完成招呼语发送流程";
+                lastSubmissionReason = "已完成招呼语发送流程";
                 lastDeliveredAt = sentAt;
                 resultList.add(job);
             } else {
@@ -1420,6 +1435,20 @@ public class Boss {
     private boolean skipSubmission(String reason) {
         lastSubmissionReason = reason;
         return false;
+    }
+
+    private String currentJobDetailUrl() {
+        Locator moreInfo = page.locator("a.more-job-btn");
+        return moreInfo.count() == 0 ? null : BossReviewJob.safeDetailUrl(moreInfo.first().getAttribute("href"));
+    }
+
+    private boolean skipForSalary(Job job, boolean verified, String reason) {
+        lastSubmissionStatus = verified ? "已过滤" : "未投递";
+        lastSubmissionOutcome = verified ? BossCityYieldMonitor.Outcome.UNAVAILABLE : BossCityYieldMonitor.Outcome.UNCERTAIN;
+        String message = (verified ? "已过滤：" : "自动跳过（未投递）：") + job.getJobName() + " · " + reason;
+        log.info(message);
+        if (progressCallback != null) progressCallback.accept(message, null, null);
+        return skipSubmission(reason);
     }
 
     private void recordLegacyJobResult(String encryptId, String status, String reason, LocalDateTime deliveredAt) {
@@ -1817,7 +1846,7 @@ public class Boss {
                 var selected=config.getSalarySelection();
                 if(selected.unrestricted())return false;
                 var monthly=BossSalary.parse(salary);
-                if(monthly!=null)return !selected.overlaps(monthly.minK(),monthly.maxK());
+                if (monthly != null || selected.hasPostedLimits()) return selected.rejectionReason(salary, monthly) != null;
                 // 旧普通流程中明确的日薪仍沿用 21.75 工作日的折算；精准审核不推算日薪。
                 String normalized=BossSalary.normalize(salary);
                 if(normalized.matches("\\d+-\\d+元/天")) {

@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.service.AiService;
-import com.getjobs.application.service.BossService;
 import com.getjobs.worker.boss.BossHrActivity;
+import com.getjobs.worker.boss.BossSalary;
 import com.getjobs.worker.boss.BossSalarySelection;
 import org.springframework.stereotype.Service;
 import java.util.*;
@@ -71,19 +71,15 @@ public class BossJobReviewer {
             return BossReviewResult.reject(job,"经验要求不符合设置",job.experience());
         // 学历是平台筛选范围，不把“本科及以上”错误当成精确文本相等，继续由网站筛选。
         if (filters.hasSalaryFilter()) {
-            BossService.SalaryInfo range=BossService.parseSalary(job.salary());
+            var range = BossSalary.parse(job.salary());
             // 列表缺失或编码未知时先补详情，不在读取完整资料前提前结束该岗位。
-            if (range==null) return detailsChecked
-                    ? BossReviewResult.unconfirmed(job,job.salary().contains("面议")
-                        ? "岗位薪资面议，无法确认符合月薪条件，已自动跳过"
-                        : "补读详情后仍无法确认月薪符合设置，已自动跳过")
-                    : null;
-            boolean matches=filters.salarySelection()!=null ? filters.salarySelection().overlaps(range.minK,range.maxK)
-                    : (filters.minMonthlyK()==null || range.maxK>=filters.minMonthlyK())
-                      && (filters.maxMonthlyK()==null || range.minK<=filters.maxMonthlyK());
-            if (!matches) {
-                var selected=filters.salarySelection()!=null?filters.salarySelection():new BossSalarySelection(List.of(new BossSalarySelection.Range(filters.minMonthlyK(),filters.maxMonthlyK())));
-                return BossReviewResult.reject(job,"薪资区间与设置无交集（岗位 "+job.salary()+"，设置 "+selected.describe()+"）",job.salary());
+            if (range == null && !detailsChecked) return null;
+            var selected = filters.salarySelection() != null ? filters.salarySelection()
+                    : new BossSalarySelection(List.of(new BossSalarySelection.Range(filters.minMonthlyK(), filters.maxMonthlyK())));
+            String reason = selected.rejectionReason(job.salary(), range);
+            if (reason != null) {
+                return range == null ? BossReviewResult.unconfirmed(job, reason)
+                        : BossReviewResult.reject(job, reason, job.salary());
             }
         }
         return null;

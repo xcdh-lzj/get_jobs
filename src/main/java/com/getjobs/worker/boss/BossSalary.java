@@ -1,5 +1,6 @@
 package com.getjobs.worker.boss;
 
+import java.math.BigDecimal;
 import java.text.Normalizer;
 import java.util.regex.Pattern;
 
@@ -31,13 +32,14 @@ public final class BossSalary {
         var match = MONTHLY.matcher(text);
         if (!match.matches()) return null;
         try {
-            double unit = switch (match.group(3).toUpperCase()) {
-                case "万" -> 10;
-                case "元" -> 0.001;
-                default -> 1;
+            int unitScale = switch (match.group(3)) {
+                case "万" -> 1;
+                case "元" -> -3;
+                default -> 0;
             };
-            double min = Double.parseDouble(match.group(1)) * unit;
-            double max = match.group(2) == null ? min : Double.parseDouble(match.group(2)) * unit;
+            double min = new BigDecimal(match.group(1)).scaleByPowerOfTen(unitScale).doubleValue();
+            double max = match.group(2) == null ? min
+                    : new BigDecimal(match.group(2)).scaleByPowerOfTen(unitScale).doubleValue();
             int months = match.group(4) == null ? 12 : Integer.parseInt(match.group(4));
             if (!Double.isFinite(min) || !Double.isFinite(max) || min <= 0 || max < min
                     || max > 1_000_000 || months < 1 || months > 36) return null;

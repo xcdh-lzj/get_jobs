@@ -3,6 +3,7 @@ package com.getjobs.application.controller;
 import com.getjobs.application.service.BossAccountContext;
 import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.manager.BossBrowserSessions;
+import com.getjobs.worker.service.BossFollowUpService;
 import com.getjobs.worker.service.BossJobService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.*;
@@ -20,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class BossController {
     private final BossJobService jobs;
     private final BossBrowserSessions browsers;
+    private final BossFollowUpService followUps;
     private final Map<SseEmitter,Long> emitters=new ConcurrentHashMap<>();
 
     @GetMapping(value="/stream",produces=MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -61,11 +63,26 @@ public class BossController {
     }
     @PostMapping("/logout")
     public Map<String,Object> logoutBoss() {
-        if (jobs.isRunning()) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT,"请先停止 Boss 任务或队列，再退出登录");
+        if (jobs.isRunning() || followUps.isRunning()) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT,"请先停止 Boss 投递或跟进任务，再退出登录");
         browsers.logout(BossAccountContext.id());
         return Map.of("success",true,"message","该账号已退出登录");
     }
     @GetMapping("/status") public Map<String,Object> getBossStatus() { return jobs.getStatus(BossAccountContext.id()); }
+    @GetMapping("/follow-up") public BossFollowUpService.Status followUp() {
+        return followUps.status(BossAccountContext.id());
+    }
+    @PostMapping("/follow-up/start")
+    public ResponseEntity<Map<String,Object>> startFollowUp() {
+        try {
+            followUps.start(BossAccountContext.id());
+            return ResponseEntity.ok(Map.of("success",true,"message","跟进任务已启动"));
+        } catch (IllegalArgumentException e) { return error(HttpStatus.BAD_REQUEST,e.getMessage()); }
+    }
+    @PostMapping("/follow-up/stop")
+    public ResponseEntity<Map<String,Object>> stopFollowUp() {
+        if (!followUps.stop(BossAccountContext.id())) return error(HttpStatus.BAD_REQUEST,"当前账号没有正在执行的跟进任务");
+        return ResponseEntity.ok(Map.of("success",true,"message","已请求停止跟进"));
+    }
     public record QueueRequest(List<Long> accountIds) {}
     @GetMapping("/queue") public BossJobService.QueueSnapshot queue() { return jobs.getQueue(); }
     @PostMapping("/queue/start")

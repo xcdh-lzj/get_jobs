@@ -129,7 +129,7 @@ export function WorkspaceSaveBar({ locked, children }: { locked: boolean; childr
   return <div ref={barRef} className="workspace-savebar">
     <div className="flex min-w-0 items-center gap-2.5 text-sm">
       {saving ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : changed.length ? <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" /> : <CheckCircle2 className="h-4 w-4 shrink-0 text-teal-600" />}
-      <div className="min-w-0"><p className="font-medium">{saving ? '正在保存当前账号…' : changed.length ? `${changed.length} 项配置有未保存修改` : ready ? '所有配置已保存' : '正在读取账号配置…'}</p><p className="mt-0.5 hidden truncate text-xs text-muted-foreground sm:block">{locked ? '队列执行中，当前账号配置已锁定' : changed.length ? changed.map(editor => editor.label).join(' · ') : '修改任意分区后，在此统一保存'}</p></div>
+      <div className="min-w-0"><p className="font-medium">{saving ? '正在保存当前账号…' : changed.length ? `${changed.length} 项配置有未保存修改` : ready ? '所有配置已保存' : '正在读取账号配置…'}</p><p className="mt-0.5 hidden truncate text-xs text-muted-foreground sm:block">{locked ? '任务处理中，当前账号配置已锁定' : changed.length ? changed.map(editor => editor.label).join(' · ') : '修改任意分区后，在此统一保存'}</p></div>
     </div>
     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
       {children}

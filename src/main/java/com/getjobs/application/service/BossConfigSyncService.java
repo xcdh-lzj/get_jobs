@@ -19,7 +19,7 @@ public class BossConfigSyncService {
     private static final String CONFIG_COLUMNS = """
             debugger,wait_time,keywords,city_code,industry,job_type,experience,degree,salary,salary_filter_policy,
             scale,stage,say_hi,expected_salary_min,expected_salary_max,enable_ai,send_img_resume,allow_repeat_chat,
-            repeat_chat_messages,filter_dead_hr,dead_status,created_at,updated_at
+            repeat_chat_messages,follow_up_settings,filter_dead_hr,dead_status,created_at,updated_at
             """;
 
     private final JdbcTemplate jdbc;

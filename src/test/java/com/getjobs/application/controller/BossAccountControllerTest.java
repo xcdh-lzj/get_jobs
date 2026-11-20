@@ -30,7 +30,8 @@ class BossAccountControllerTest {
         var jobs=mock(BossJobService.class);
         var browsers=mock(BossBrowserSessions.class);
         when(jobs.startQueue(eq(List.of(1L,2L)),any())).thenReturn(true);
-        var response=new BossController(jobs,browsers).startQueue(new BossController.QueueRequest(List.of(1L,2L)));
+        var response=new BossController(jobs,browsers,mock(com.getjobs.worker.service.BossFollowUpService.class))
+                .startQueue(new BossController.QueueRequest(List.of(1L,2L)));
         assertTrue(response.getStatusCode().is2xxSuccessful());
         verify(browsers,never()).loggedIn(anyLong());
         verify(jobs).startQueue(eq(List.of(1L,2L)),any());

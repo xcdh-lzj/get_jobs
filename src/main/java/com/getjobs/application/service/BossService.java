@@ -14,6 +14,7 @@ import com.getjobs.application.mapper.BossConfigMapper;
 import com.getjobs.application.mapper.BossIndustryMapper;
 import com.getjobs.application.mapper.BossOptionMapper;
 import com.getjobs.worker.boss.BossConfig;
+import com.getjobs.worker.boss.BossFollowUpPolicy;
 import com.getjobs.worker.boss.review.BossCandidateCollector;
 import com.getjobs.worker.boss.review.BossReviewJob;
 import lombok.RequiredArgsConstructor;
@@ -76,6 +77,9 @@ public class BossService {
             }
             if (tableExists && !names.contains("repeat_chat_messages")) {
                 statement.executeUpdate("ALTER TABLE boss_config ADD COLUMN repeat_chat_messages TEXT");
+            }
+            if (tableExists && !names.contains("follow_up_settings")) {
+                statement.executeUpdate("ALTER TABLE boss_config ADD COLUMN follow_up_settings TEXT");
             }
             if (tableExists && !names.contains("salary_filter_policy")) {
                 String url=connection.getMetaData().getURL();
@@ -278,6 +282,15 @@ public class BossService {
         var selected=salarySelection(partial.getSalary()!=null?partial.getSalary():existing==null?null:existing.getSalary(),policy);
         partial.setExpectedSalaryMin(selected.minimumK()==null?0:(int)Math.floor(selected.minimumK()));
         partial.setExpectedSalaryMax(selected.maximumK()==null?0:(int)Math.ceil(selected.maximumK()));
+        var followUp = partial.getFollowUpPolicy() != null ? partial.getFollowUpPolicy().validated()
+                : BossFollowUpPolicy.read(existing == null ? null : existing.getFollowUpSettings());
+        String followUpText = partial.getRepeatChatMessages() != null ? partial.getRepeatChatMessages()
+                : existing == null ? null : existing.getRepeatChatMessages();
+        if (followUp.enabled() && followUpText != null && followUpText.isBlank()) {
+            throw new IllegalArgumentException("开启定期跟进时，请至少填写一条跟进消息");
+        }
+        partial.setFollowUpPolicy(followUp);
+        partial.setFollowUpSettings(followUp.stored());
 
         if (existing == null) {
             // 表为空，插入新记录
@@ -297,6 +310,8 @@ public class BossService {
         if (partial.getSendImgResume() != null) existing.setSendImgResume(partial.getSendImgResume());
         if (partial.getAllowRepeatChat() != null) existing.setAllowRepeatChat(partial.getAllowRepeatChat());
         if (partial.getRepeatChatMessages() != null) existing.setRepeatChatMessages(partial.getRepeatChatMessages());
+        existing.setFollowUpPolicy(followUp);
+        existing.setFollowUpSettings(partial.getFollowUpSettings());
         if (partial.getWaitTime() != null) existing.setWaitTime(partial.getWaitTime());
 
         if (partial.getKeywords() != null) existing.setKeywords(partial.getKeywords());
@@ -352,6 +367,7 @@ public class BossService {
         config.setAllowRepeatChat(Integer.valueOf(1).equals(entity.getAllowRepeatChat()));
         config.setRepeatChatMessages(entity.getRepeatChatMessages() != null
                 ? entity.getRepeatChatMessages() : BossConfig.DEFAULT_REPEAT_CHAT_MESSAGES);
+        config.setFollowUpPolicy(BossFollowUpPolicy.read(entity.getFollowUpSettings()));
         config.setWaitTime(entity.getWaitTime() != null ? String.valueOf(entity.getWaitTime()) : null);
 
         // 关键词（允许逗号或括号列表），直接解析为列表
@@ -391,7 +407,7 @@ public class BossService {
         config.setExpectedSalary(java.util.Arrays.asList(
                 selected.minimumK()==null?0:(int)Math.floor(selected.minimumK()),
                 selected.maximumK()==null?0:(int)Math.ceil(selected.maximumK())));
-        if(selected.unrestricted())config.setSalary(java.util.List.of(com.getjobs.worker.utils.Constant.UNLIMITED_CODE));
+        if(selected.ranges().isEmpty())config.setSalary(java.util.List.of(com.getjobs.worker.utils.Constant.UNLIMITED_CODE));
         else if("custom".equals(salaryPolicy.mode()))config.setSalary(salaryPolicy.searchCodes(getOptionsByType("salary")));
 
         // HR不在线状态（括号列表字符串）

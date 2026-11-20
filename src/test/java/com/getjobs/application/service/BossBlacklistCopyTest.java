@@ -1,13 +1,18 @@
 package com.getjobs.application.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.config.BossAccountWebConfig;
 import com.getjobs.application.controller.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 import org.sqlite.SQLiteDataSource;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -17,6 +22,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class BossBlacklistCopyTest {
+    private final ObjectMapper json = new ObjectMapper();
     @TempDir Path directory;
     private JdbcTemplate jdbc;
     private BossAccountService accounts;
@@ -44,6 +50,16 @@ class BossBlacklistCopyTest {
     @AfterEach void clear(){BossAccountContext.clear();locks.release();}
     private void add(long id,String type,String value){jdbc.update("INSERT INTO boss_blacklist(account_id,type,value,created_at,updated_at) VALUES(?,?,?,'old-created','old-updated')",id,type,value);}
     private List<Map<String,Object>> entries(long id){return jdbc.queryForList("SELECT * FROM boss_blacklist WHERE account_id=? ORDER BY id",id);}
+
+    private MockMvc mvc() {
+        class Registry extends org.springframework.web.servlet.config.annotation.InterceptorRegistry {
+            org.springframework.web.servlet.HandlerInterceptor[] all(){return getInterceptors().stream().map(org.springframework.web.servlet.HandlerInterceptor.class::cast).toArray(org.springframework.web.servlet.HandlerInterceptor[]::new);}
+        }
+        var registry = new Registry();
+        new BossAccountWebConfig(accounts, locks).addInterceptors(registry);
+        return MockMvcBuilders.standaloneSetup(new BossBlacklistCopyController(copies, json))
+                .addInterceptors(registry.all()).setControllerAdvice(new BossApiErrors()).build();
+    }
 
     @Test void mergesDeduplicatesAndRemainsIndependentWithoutChangingOtherAccountData() {
         var original=entries(1);var third=entries(3);var existing=entries(2);
@@ -120,12 +136,7 @@ class BossBlacklistCopyTest {
     }
 
     @Test void httpTargetComesFromAccountScopeAndLockedOrInvalidRequestsReturnClearErrors() throws Exception {
-        class Registry extends org.springframework.web.servlet.config.annotation.InterceptorRegistry {
-            org.springframework.web.servlet.HandlerInterceptor[] all(){return getInterceptors().stream().map(org.springframework.web.servlet.HandlerInterceptor.class::cast).toArray(org.springframework.web.servlet.HandlerInterceptor[]::new);}
-        }
-        var registry=new Registry();new BossAccountWebConfig(accounts,locks).addInterceptors(registry);
-        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(new BossBlacklistCopyController(copies))
-                .addInterceptors(registry.all()).setControllerAdvice(new BossApiErrors()).build();
+        var mvc = mvc();
         var third=entries(3);
         mvc.perform(post("/api/boss/config/blacklist/copy?accountId=2").contentType("application/json")
                 .content("{\"sourceAccountId\":1,\"targetAccountId\":3,\"types\":[\"company\"]}"))
@@ -139,5 +150,59 @@ class BossBlacklistCopyTest {
         mvc.perform(post("/api/boss/config/blacklist/copy?accountId=2").contentType("application/json").content("{\"sourceAccountId\":1}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.message").exists());
         assertEquals(1,BossAccountContext.id());
+    }
+
+    @Test void exportedKeywordsRoundTripWithoutAccountMetadata() throws Exception {
+        var mvc = mvc();
+        var source = entries(1);
+        var target = entries(2);
+        var third = entries(3);
+        byte[] exported = mvc.perform(get("/api/boss/config/blacklist/export?accountId=1"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/json"))
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"boss_blacklist.json\""))
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertEquals(json.readTree("""
+                {"version":1,"entries":[
+                  {"type":"company","value":"公司A"},
+                  {"type":"job","value":"销售经理"},
+                  {"type":"job","value":"产品经理"},
+                  {"type":"recruiter","value":"猎头"},
+                  {"type":"company","value":"公司B"}
+                ]}
+                """), json.readTree(exported));
+
+        var file = new MockMultipartFile("file", "boss_blacklist.json", "application/json", exported);
+        mvc.perform(multipart("/api/boss/config/blacklist/import").file(file).param("accountId", "2"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.importedCount").value(4))
+                .andExpect(jsonPath("$.skippedCount").value(1)).andExpect(jsonPath("$.blacklist.length()").value(6));
+        mvc.perform(multipart("/api/boss/config/blacklist/import").file(file).param("accountId", "2"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.importedCount").value(0))
+                .andExpect(jsonPath("$.skippedCount").value(5)).andExpect(jsonPath("$.blacklist.length()").value(6));
+        assertEquals(target, entries(2).subList(0, target.size()));
+        assertEquals(source, entries(1));
+        assertEquals(third, entries(3));
+    }
+
+    @Test void importValidatesTheEntireFileBeforeWritingAndRespectsAccountLocks() throws Exception {
+        var mvc = mvc();
+        var target = entries(2);
+        for (String invalid : List.of("", "{", "{\"version\":2,\"entries\":[]}",
+                "{\"version\":1,\"entries\":[]} {}", """
+                {"version":1,"entries":[{"type":"job","value":"新增条目"},{"type":"job","value":123}]}
+                """)) {
+            var file = new MockMultipartFile("file", "bad.json", "application/json", invalid.getBytes(StandardCharsets.UTF_8));
+            mvc.perform(multipart("/api/boss/config/blacklist/import").file(file).param("accountId", "2"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").exists());
+            assertEquals(target, entries(2));
+        }
+        locks.reserve(List.of(2L));
+        var lockedFile = new MockMultipartFile("file", "valid.json", "application/json",
+                "{\"version\":1,\"entries\":[{\"type\":\"job\",\"value\":\"新增条目\"}]}".getBytes(StandardCharsets.UTF_8));
+        mvc.perform(multipart("/api/boss/config/blacklist/import").file(lockedFile).param("accountId", "2"))
+                .andExpect(status().isConflict());
+        mvc.perform(get("/api/boss/config/blacklist/export?accountId=2")).andExpect(status().isOk());
+        assertEquals(target, entries(2));
     }
 }

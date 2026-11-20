@@ -12,14 +12,14 @@ interface CopyResult {
 }
 const categories = [['company', '公司'], ['job', '岗位'], ['recruiter', 'HR']] as const
 
-export default function BossBlacklistCopy({ accountId, locked, onCopied }: {
-  accountId: number; locked: boolean; onCopied: (items: BlacklistItem[]) => void
+export default function BossBlacklistCopy({ accountId, locked, pending, onPendingChange, onCopied }: {
+  accountId: number; locked: boolean; pending: boolean; onPendingChange: (pending: boolean) => void;
+  onCopied: (items: BlacklistItem[]) => void
 }) {
   const [accounts, setAccounts] = useState<BossAccount[]>([])
   const [sourceId, setSourceId] = useState<number | null>(null)
   const [types, setTypes] = useState<string[]>(categories.map(([type]) => type))
   const [loading, setLoading] = useState(true)
-  const [pending, setPending] = useState(false)
   const [reload, setReload] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -41,7 +41,7 @@ export default function BossBlacklistCopy({ accountId, locked, onCopied }: {
   const copy = async () => {
     if (!source || !types.length || pending || locked) return
     const controller = new AbortController(); command.current = controller
-    setPending(true); setError(''); setMessage('')
+    onPendingChange(true); setError(''); setMessage('')
     try {
       const response = await fetch(bossUrl('/api/boss/config/blacklist/copy', accountId), {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
@@ -51,12 +51,12 @@ export default function BossBlacklistCopy({ accountId, locked, onCopied }: {
       if (!response.ok) throw new Error(data.message || data.detail || '复制黑名单失败')
       if (controller.signal.aborted) return
       const result = data as CopyResult
-      onCopied(result.blacklist.map(item => ({ ...item, type: item.type === 'boss' ? 'company' : item.type })))
+      onCopied(result.blacklist)
       setMessage(`已从“${result.sourceAccountName}”（ID ${result.sourceAccountId}）合并到“${result.targetAccountName}”（ID ${result.targetAccountId}）：来源 ${result.sourceCount} 条有效去重项，新增 ${result.copiedCount} 条，已存在跳过 ${result.skippedCount} 条。`)
     } catch (reason) {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '复制失败，请重试')
     } finally {
-      if (!controller.signal.aborted) setPending(false)
+      if (!controller.signal.aborted) onPendingChange(false)
       if (command.current === controller) command.current = null
     }
   }

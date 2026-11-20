@@ -5,6 +5,7 @@ import com.getjobs.application.entity.*;
 import com.getjobs.application.mapper.*;
 import com.getjobs.application.service.BossService.HistoryFilters;
 import com.getjobs.application.service.BossService.HistorySort;
+import com.getjobs.worker.boss.BossFollowUpPolicy;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.*;
@@ -58,22 +59,57 @@ class BossAccountDataTest {
     }
     @AfterEach void close() { BossAccountContext.clear(); if (session!=null) session.close(); }
 
+    @Test void legacyRepeatPermissionDoesNotEnableSchedulingAndFollowUpSettingsPersistPerAccount() throws Exception {
+        assertEquals(1, boss.getFirstConfig().getAllowRepeatChat());
+        assertFalse(boss.loadBossConfig().getFollowUpPolicy().enabled());
+        long second = accounts.create("第二账号", null).id();
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
+                new com.getjobs.application.controller.BossConfigController(boss, new BossResumeImageService(), citySettings, hrSettings)).build();
+        var put = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/boss/config").contentType("application/json");
+        mvc.perform(put.content("""
+                {"followUpPolicy":{"enabled":true,"waitHours":36,"intervalHours":12,"batchSize":15},
+                 "repeatChatMessages":"示例跟进文案"}
+                """)).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        assertEquals(new BossFollowUpPolicy(true, 36, 12, 15, null), boss.loadBossConfig().getFollowUpPolicy());
+        mvc.perform(put.content("""
+                {"followUpPolicy":{"enabled":true,"waitHours":36,"intervalHours":12,"batchSize":15,
+                 "dateSelection":{"daysAgo":[2,1],"dates":["2026-11-08"]}}}
+                """)).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        assertEquals(new BossFollowUpPolicy.DateSelection(List.of(1, 2), List.of("2026-11-08")),
+                boss.loadBossConfig().getFollowUpPolicy().dateSelection());
+        mvc.perform(put.content("{\"repeatChatMessages\":\"   \"}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        assertEquals("示例跟进文案", boss.loadBossConfig().getRepeatChatMessages());
+        try (var scope = BossAccountContext.use(second)) {
+            assertFalse(boss.loadBossConfig().getFollowUpPolicy().enabled());
+            assertEquals(List.of(1), boss.loadBossConfig().getFollowUpPolicy().dateSelection().daysAgo());
+        }
+    }
+
     @Test void customSalaryPersistsClearedBoundsCopiesPerAccountAndValidatesBeforeOtherChanges() throws Exception {
         jdbc.execute("INSERT INTO boss_option(type,name,code) VALUES('salary','不限','0'),('salary','10-20K','405'),('salary','20-50K','406'),('salary','50K以上','407')");
         jdbc.update("UPDATE boss_config SET salary='[10-20K]',expected_salary_min=15,expected_salary_max=25");
         var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(new com.getjobs.application.controller.BossConfigController(boss,new BossResumeImageService(),citySettings,hrSettings)).build();
         var put=org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/boss/config").contentType("application/json");
-        mvc.perform(put.content("{\"salaryPolicy\":{\"mode\":\"custom\",\"minMonthlyK\":12.5,\"maxMonthlyK\":18.5}}"))
+        mvc.perform(put.content("{\"salaryPolicy\":{\"mode\":\"custom\",\"minMonthlyK\":12.5,\"maxMonthlyK\":18.5,\"minPostedMonthlyK\":12,\"maxPostedMonthlyK\":20}}"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
         assertEquals(List.of("405"),boss.loadBossConfig().getSalary());assertEquals(12.5,boss.loadBossConfig().getSalarySelection().minimumK());
+        assertEquals(12.0, boss.loadBossConfig().getSalarySelection().minPostedMonthlyK());
+        assertEquals(20.0, boss.loadBossConfig().getSalarySelection().maxPostedMonthlyK());
         long second=accounts.create("第二账号",1L).id();
         try(var scope=BossAccountContext.use(second)) {
             assertEquals(12.5,com.getjobs.worker.boss.BossSalaryPolicy.of(boss.getFirstConfig()).minMonthlyK());
-            mvc.perform(put.content("{\"salaryPolicy\":{\"mode\":\"custom\",\"minMonthlyK\":15,\"maxMonthlyK\":null}}"))
+            assertEquals(20.0, boss.loadBossConfig().getSalarySelection().maxPostedMonthlyK());
+            mvc.perform(put.content("{\"salaryPolicy\":{\"mode\":\"custom\",\"minMonthlyK\":15,\"maxMonthlyK\":null,\"minPostedMonthlyK\":null,\"maxPostedMonthlyK\":null}}"))
                     .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
             assertNull(boss.loadBossConfig().getSalarySelection().maximumK());assertTrue(boss.loadBossConfig().getSalary().contains("407"));
+            assertFalse(boss.loadBossConfig().getSalarySelection().hasPostedLimits());
         }
         assertEquals(18.5,boss.loadBossConfig().getSalarySelection().maximumK());
+        assertEquals(20.0, boss.loadBossConfig().getSalarySelection().maxPostedMonthlyK());
+        mvc.perform(put.content("{\"keywords\":\"不应保存\",\"salaryPolicy\":{\"mode\":\"selection\",\"minPostedMonthlyK\":25,\"maxPostedMonthlyK\":20}}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        assertEquals(20.0, boss.loadBossConfig().getSalarySelection().maxPostedMonthlyK());
         mvc.perform(put.content("{\"salaryPolicy\":{\"mode\":\"custom\",\"minMonthlyK\":null,\"maxMonthlyK\":20}}"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
         assertNull(boss.loadBossConfig().getSalarySelection().minimumK());
@@ -642,7 +678,8 @@ class BossAccountDataTest {
         org.mockito.Mockito.when(jobs.getStatus(second)).thenReturn(java.util.Map.of("accountId",second));
         var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
                 new com.getjobs.application.controller.BossConfigController(boss,new BossResumeImageService(),citySettings,hrSettings),
-                new com.getjobs.application.controller.BossController(jobs,browsers),
+                new com.getjobs.application.controller.BossController(jobs,browsers,
+                        org.mockito.Mockito.mock(com.getjobs.worker.service.BossFollowUpService.class)),
                 new com.getjobs.application.controller.BossAccountController(accounts,browsers,jobs))
                 .addInterceptors(registry.interceptors()).setControllerAdvice(new com.getjobs.application.controller.BossApiErrors()).build();
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/boss/config?accountId="+second)
